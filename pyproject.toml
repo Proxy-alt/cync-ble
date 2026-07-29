@@ -1,0 +1,10 @@
+# Not a distributable package - this repository ships a Home Assistant
+# custom_component, and the protocol library it depends on lives in cync-lan on
+# PyPI. This file exists only to configure the tooling.
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

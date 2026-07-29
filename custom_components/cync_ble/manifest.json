@@ -1,0 +1,13 @@
+{
+  "domain": "cync_ble",
+  "name": "Cync Bluetooth",
+  "codeowners": ["@Proxy-alt"],
+  "config_flow": true,
+  "dependencies": ["bluetooth_adapters"],
+  "documentation": "https://github.com/Proxy-alt/cync-ble",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Proxy-alt/cync-ble/issues",
+  "requirements": ["cync-lan>=0.6.0"],
+  "version": "0.1.0"
+}
