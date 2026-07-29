@@ -13,11 +13,15 @@ CONF_MESH_PASSWORD = "mesh_password"
 CONF_NODE_ADDRESS = "node_address"
 CONF_DEVICES = "devices"
 
-# Inbound status notifications are refused by at least one firmware (it declares
-# `notify`, rejects the CCCD write, then drops the link), so state is polled.
-# Kept deliberately unhurried: every poll is a mesh round trip, and the mesh is
-# also carrying commands.
-DEFAULT_SCAN_INTERVAL_SECONDS = 60
+# State arrives as notifications, so this is a backstop rather than the primary
+# path - see ARCHITECTURE.md. Deliberately unhurried: a refresh is a mesh round
+# trip, and the mesh is also carrying commands.
+#
+# An earlier revision polled because notifications were believed refused. They
+# are not: BlueZ's StartNotify is rejected, but writing 0x01 to the notification
+# characteristic's value turns reporting on regardless, which is what
+# python-dimond has always done.
+DEFAULT_REFRESH_INTERVAL_SECONDS = 300
 
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.

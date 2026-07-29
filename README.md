@@ -54,12 +54,13 @@ worst failure mode available, since it fails **silently**.
 | brightness | **confirmed** |
 | colour temperature | not confirmed |
 | RGB colour | not confirmed |
-| inbound status notifications | **refused** by tested firmware |
+| inbound status updates | **confirmed** — 16 packets received and decrypted |
+| the exact meaning of those updates | partially decoded, one capture only |
 
-That last row is the real limitation. At least one firmware advertises
-notification support, rejects the subscription, and drops the connection — so
-state has to be polled rather than pushed. It is why the manifest says
-`local_polling` and not `local_push`.
+State is pushed rather than polled, which is why the manifest says `local_push`.
+The remaining soft spot is the last row: the inbound record layout was worked out
+from a single capture and disagrees with another implementation on one field, so
+state updates should be treated as best-effort until a second mesh confirms it.
 
 ## Credentials
 

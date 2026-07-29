@@ -10,7 +10,7 @@
   ],
   "documentation": "https://github.com/Proxy-alt/cync-ble",
   "integration_type": "hub",
-  "iot_class": "local_polling",
+  "iot_class": "local_push",
   "issue_tracker": "https://github.com/Proxy-alt/cync-ble/issues",
   "requirements": [
     "cync-lan>=0.6.0"

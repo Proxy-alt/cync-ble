@@ -99,16 +99,28 @@ They do **not** come from the hub. `cync-lan`'s `query_mesh_credentials` button
 implies otherwise and cannot work, because hub commands currently get no reply
 at all.
 
-### `iot_class` is `local_polling`, not `local_push`
+### `iot_class` is `local_push`
 
-Tempting to claim `local_push`, but the honest answer is polling. Status
-notifications are **refused** by at least one firmware: it declares `notify` on
-its characteristic, rejects the CCCD subscription with GATT `Unlikely Error`,
-and then drops the connection.
+This started as `local_polling`, on the belief that notifications were refused
+outright. That was wrong, and the correction is the reason this section changed:
+what fails is **BlueZ's `StartNotify`**, not reporting itself.
 
-Until that is solved, inbound state has to be polled or assumed. This is the
-weakest part of the design and should not be papered over — a `local_push` claim
-in the manifest would be wrong.
+The device does expose a `0x2902` CCCD (handle 19) and still answers the
+subscribe with GATT `Unlikely Error`. But the CCCD is not how this protocol
+enables reporting — writing `0x01` to the notification characteristic's *value*
+is, which is what `google/python-dimond` does while never writing a CCCD at all.
+With the enable-write first, **16 status packets arrived and decrypted correctly**
+on a connection whose `StartNotify` had just been rejected.
+
+`cync_lan.ble_mesh.BleMeshSession.subscribe()` does the enable-write first and
+treats a refused subscribe as survivable, so this integration gets pushed state.
+Polling a forty-node mesh — which was the weakest part of this design — is no
+longer necessary.
+
+One caveat carried forward: the inbound `0xDC` slot layout is decoded on the
+strength of a single capture, and its presence rule contradicts acync's. See
+`parse_status`. State updates should be treated as best-effort until a second
+mesh confirms the layout.
 
 ## Protocol status
 
@@ -124,7 +136,8 @@ demonstrated.
 | brightness (`0xF0` and `0xD2`) | **confirmed**, both forms |
 | colour temperature | not confirmed |
 | RGB | not confirmed |
-| status notifications | **refused** by tested firmware |
+| status notifications | **received and decrypted** — BlueZ's `StartNotify` is refused, but the vendor's own enable-write works |
+| inbound slot layout | plausible only — one capture, and it contradicts acync |
 
 Colour temperature and RGB ride the same `0xF0` family whose brightness member
 works, so they are better founded than a guess — but nobody has moved either
@@ -152,5 +165,6 @@ Two things are switched off rather than faked, because CI should mean something:
 6. Then, and only then, talk to @Kinachi249 and open an architecture discussion
    about the second-integration question.
 
-Colour temperature and RGB wait for hardware confirmation. So does anything
-depending on inbound notifications.
+Colour temperature and RGB wait for hardware confirmation. Inbound state can be
+built on now, but the slot layout deserves a second capture before anything
+depends on the details.
