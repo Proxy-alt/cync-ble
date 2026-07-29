@@ -130,6 +130,18 @@ Colour temperature and RGB ride the same `0xF0` family whose brightness member
 works, so they are better founded than a guess — but nobody has moved either
 over this transport, and the first release should not imply otherwise.
 
+## Not claimed yet, on purpose
+
+Two things are switched off rather than faked, because CI should mean something:
+
+- **`config_flow` is `false` in the manifest.** Hassfest correctly rejects a
+  declared config flow with no `config_flow.py` behind it. It flips to `true`
+  in the same commit that adds a working one — step 3 below.
+- **HACS validation is not in CI.** It fails on `<Validation brands>` until the
+  integration is listed in `home-assistant/brands`, and opening that pull
+  request for something which cannot yet control a device would be premature.
+  The job returns when there is something installable to validate.
+
 ## Build order
 
 1. `const.py`, `manifest.json`, `hacs.json` — settle the domain and dependencies.

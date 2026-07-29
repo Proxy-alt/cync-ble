@@ -25,14 +25,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: home-assistant/actions/hassfest@master
 
-  hacs:
-    name: HACS
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: hacs/action@main
-        with:
-          category: integration
+  # HACS validation is deliberately absent for now. It fails on
+  # <Validation brands> until this integration is listed in
+  # home-assistant/brands, and opening that pull request for something that
+  # does not yet control a device would be premature. A check that is expected
+  # to be red teaches people to ignore CI, so it comes back when there is
+  # something installable to validate - see the build order in ARCHITECTURE.md.
 
   ruff:
     name: Ruff
