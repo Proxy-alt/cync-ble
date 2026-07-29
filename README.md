@@ -54,13 +54,19 @@ worst failure mode available, since it fails **silently**.
 | brightness | **confirmed** |
 | colour temperature | not confirmed |
 | RGB colour | not confirmed |
-| inbound status updates | **confirmed** — 16 packets received and decrypted |
+| inbound status updates | received and decrypted — but **at the cost of the connection** |
 | the exact meaning of those updates | partially decoded, one capture only |
 
-State is pushed rather than polled, which is why the manifest says `local_push`.
-The remaining soft spot is the last row: the inbound record layout was worked out
-from a single capture and disagrees with another implementation on one field, so
-state updates should be treated as best-effort until a second mesh confirms it.
+That second-to-last row is the real limitation, and it is a Linux Bluetooth stack
+problem rather than a device one. BlueZ will not hand over notifications unless it
+subscribes, and this firmware rejects the subscription in a way that drops the
+link. **On a local adapter you can send or receive, not both** — so the manifest
+says `local_polling`.
+
+An **ESPHome Bluetooth proxy** uses its own Bluetooth client rather than BlueZ and
+may well not have this problem, which would make pushed state available again.
+Nobody has tested that yet; it is the most useful thing anyone with a proxy could
+report.
 
 ## Credentials
 

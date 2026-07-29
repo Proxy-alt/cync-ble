@@ -99,28 +99,42 @@ They do **not** come from the hub. `cync-lan`'s `query_mesh_credentials` button
 implies otherwise and cannot work, because hub commands currently get no reply
 at all.
 
-### `iot_class` is `local_push`
+### `iot_class` is `local_polling` — via `local_push` and back again
 
-This started as `local_polling`, on the belief that notifications were refused
-outright. That was wrong, and the correction is the reason this section changed:
-what fails is **BlueZ's `StartNotify`**, not reporting itself.
+This section has been wrong twice, so the reasoning is laid out rather than the
+conclusion alone.
 
-The device does expose a `0x2902` CCCD (handle 19) and still answers the
-subscribe with GATT `Unlikely Error`. But the CCCD is not how this protocol
-enables reporting — writing `0x01` to the notification characteristic's *value*
-is, which is what `google/python-dimond` does while never writing a CCCD at all.
-With the enable-write first, **16 status packets arrived and decrypted correctly**
-on a connection whose `StartNotify` had just been rejected.
+It started as `local_polling`, on the belief that notifications were refused
+outright. That was wrong: what fails is **BlueZ's `StartNotify`**, not reporting.
+So it became `local_push`. That was also wrong, and it is back to
+`local_polling`, because of what testing the remaining orderings showed:
 
-`cync_lan.ble_mesh.BleMeshSession.subscribe()` does the enable-write first and
-treats a refused subscribe as survivable, so this integration gets pushed state.
-Polling a forty-node mesh — which was the weakest part of this design — is no
-longer necessary.
+| | result |
+|---|---|
+| never subscribe | sending works, no inbound status |
+| enable-write only, no subscribe | **no notifications at all** |
+| anything calling `StartNotify` | packets arrive, then the link **drops** |
 
-One caveat carried forward: the inbound `0xDC` slot layout is decoded on the
-strength of a single capture, and its presence rule contradicts acync's. See
-`parse_status`. State updates should be treated as best-effort until a second
-mesh confirms the layout.
+BlueZ will not route notifications without `StartNotify`, and this firmware
+refuses the CCCD write `StartNotify` performs — fatally. **So on a local adapter
+you can send or receive, not both.** For an integration that has to do both,
+that means polling, or reconnecting between the two, and polling is the honest
+manifest claim.
+
+`google/python-dimond` has neither problem because bluepy never uses BlueZ's
+GATT API. That route is not available here.
+
+**This makes proxy compatibility decisive, not a nicety.** An ESPHome Bluetooth
+proxy implements its own GATT client instead of going through BlueZ, so it may
+not trip this at all — in which case `local_push` becomes correct again, for
+proxy users. Nobody has tested it. It is now the highest-value unknown in this
+repository, ahead of any code.
+
+Two further caveats carried forward. The inbound `0xDC` slot layout is decoded
+from a single capture and its presence rule contradicts acync's — see
+`parse_status` — so state updates are best-effort until a second mesh confirms
+it. And `subscribe()` raises rather than returning quietly, because a refused
+subscribe leaves a dead session and a caller needs to know that.
 
 ## Protocol status
 
