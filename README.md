@@ -1,5 +1,15 @@
 <p align="center">
-  <img src="custom_components/cync_ble/brand/icon@2x.png" alt="Cync BLE" width="128">
+  <picture>
+    <!-- The mark is black on transparent, so it is close to invisible on
+         GitHub's dark theme without this. -->
+    <source
+      media="(prefers-color-scheme: dark)"
+      srcset="custom_components/cync_ble/brand/dark_logo@2x.png">
+    <img
+      src="custom_components/cync_ble/brand/logo@2x.png"
+      alt="Cync Bluetooth"
+      width="420">
+  </picture>
 </p>
 
 # Cync Bluetooth
