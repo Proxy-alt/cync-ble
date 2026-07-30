@@ -55,12 +55,9 @@ from .const import (
     CONF_MESH_NAME,
     CONF_MESH_PASSWORD,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
-    DISCONNECT_CONFIRM_TIMEOUT_SECONDS,
-    DISCONNECT_SETTLE_SECONDS,
     DOMAIN,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
-    PROVEN_NODES,
     REFRESH_TIMEOUT_SECONDS,
 )
 
@@ -89,10 +86,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # Tried first on every (re)connect, since it's the anchor most
         # recently known to work - avoids scanning all ~40 mesh nodes on
         # every reconnect when the same one keeps working fine.
-        # Nodes that have recently accepted a connection, most recent first.
-        # Rotated between rather than pinned to - see _candidate_macs.
-        self._proven: list[str] = []
-        self._anchor: int = 0
+        self._last_good_mac: str | None = None
 
         # What the mesh last told us about itself, by device id. Populated by
         # _async_harvest and deliberately kept across reconnects: a stale
@@ -110,34 +104,11 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         return self.session is not None and self.session.authenticated
 
     def _candidate_macs(self) -> list[str]:
-        """Nodes to try, proven ones first, rotated among themselves.
-
-        Two forces pull against each other here and both are real.
-
-        Pinning every cycle to one "known good" node means that device
-        absorbs every connect/disconnect in the house - the churn a fast
-        poll interval collapsed under. But rotating blindly across all 46
-        is worse: nodes differ enormously in whether they will accept a
-        connection at all (measured - one answered 11 of 12 attempts while
-        another refused both), and each dead end costs ~18s of
-        establish_connection before it gives up. A blind rotation spent
-        entire refresh windows dialling nodes that were never going to
-        answer.
-
-        So: rotate, but only among nodes that have actually connected
-        recently, keeping the rest as fallback. Load is spread without
-        paying for it in dead ends.
-        """
         macs = [d["mac"] for d in self.devices if d.get("mac")]
-        if not macs:
-            return []
-        proven = [m for m in self._proven if m in macs]
-        rest = [m for m in macs if m not in proven]
-        if proven:
-            start = self._anchor % len(proven)
-            self._anchor = start + 1
-            proven = proven[start:] + proven[:start]
-        return proven + rest
+        if self._last_good_mac and self._last_good_mac in macs:
+            macs.remove(self._last_good_mac)
+            macs.insert(0, self._last_good_mac)
+        return macs
 
     def _resolve(self, mac: str) -> tuple[Any, str] | None:
         """Find the real Bluetooth address behind one stored MAC.
@@ -264,41 +235,14 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         )
 
     async def _async_close_link(self) -> None:
-        """Drop the current link and wait until it is genuinely gone.
-
-        `disconnect()` returning only means bleak has asked; the stack may
-        still be unwinding. Beginning the next connect during that window is
-        what made a 45s poll interval fail outright rather than merely run
-        late, so this confirms the client reports itself disconnected and
-        then pauses on top of that.
-
-        A harvest link is usually already dead when this runs - the firmware
-        drops it - so the common path here is a no-op that returns at once.
-        """
+        """Drop whatever link is currently open. One at a time - this radio is
+        shared with every other Bluetooth integration on the box."""
         client, self._client, self.session = self._client, None, None
-        if client is None:
-            return
-        try:
-            await client.disconnect()
-        except Exception:  # best effort - the link is often already gone
-            _LOGGER.debug("%s: error closing link", self.mesh_name, exc_info=True)
-
-        deadline = time.monotonic() + DISCONNECT_CONFIRM_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
+        if client is not None:
             try:
-                if not client.is_connected:
-                    break
-            except Exception:  # a client too far gone to ask is gone enough
-                break
-            await asyncio.sleep(0.25)
-        else:
-            _LOGGER.debug(
-                "%s: link never confirmed disconnect within %.0fs; continuing "
-                "anyway, the next connect may suffer for it",
-                self.mesh_name,
-                DISCONNECT_CONFIRM_TIMEOUT_SECONDS,
-            )
-        await asyncio.sleep(DISCONNECT_SETTLE_SECONDS)
+                await client.disconnect()
+            except Exception:
+                _LOGGER.debug("%s: error closing link", self.mesh_name, exc_info=True)
 
     async def _connect_to(self, mac: str) -> BleMeshSession | None:
         resolved = self._resolve(mac)
@@ -338,13 +282,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return None
 
         self._client = client
-        # Remember this node worked. Bounded, and most-recent-first, so a
-        # node that stops answering ages out instead of being retried
-        # forever at the head of the queue.
-        if mac in self._proven:
-            self._proven.remove(mac)
-        self._proven.insert(0, mac)
-        del self._proven[PROVEN_NODES:]
+        self._last_good_mac = mac
         return session
 
     async def _async_ensure_connected(self) -> BleMeshSession:
