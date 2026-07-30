@@ -55,6 +55,8 @@ from .const import (
     CONF_MESH_NAME,
     CONF_MESH_PASSWORD,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
+    DISCONNECT_CONFIRM_TIMEOUT_SECONDS,
+    DISCONNECT_SETTLE_SECONDS,
     DOMAIN,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
@@ -86,7 +88,8 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # Tried first on every (re)connect, since it's the anchor most
         # recently known to work - avoids scanning all ~40 mesh nodes on
         # every reconnect when the same one keeps working fine.
-        self._last_good_mac: str | None = None
+        # Rotates the node each cycle starts from - see _candidate_macs.
+        self._anchor: int = 0
 
         # What the mesh last told us about itself, by device id. Populated by
         # _async_harvest and deliberately kept across reconnects: a stale
@@ -104,11 +107,24 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         return self.session is not None and self.session.authenticated
 
     def _candidate_macs(self) -> list[str]:
+        """Every node, rotated so a different one leads each time.
+
+        This used to put the last-known-good node first, which is the
+        obvious choice and the wrong one: mesh relay means any node reaches
+        everything, so pinning to one device just means that device takes
+        every connect/disconnect cycle in the house. That is exactly the
+        churn pattern a fast poll interval collapsed under.
+
+        Rotating spreads the load with no loss - there is no such thing as a
+        better node here, only a nearer one, and unreachable candidates are
+        filtered out by `_resolve` before anything is dialled.
+        """
         macs = [d["mac"] for d in self.devices if d.get("mac")]
-        if self._last_good_mac and self._last_good_mac in macs:
-            macs.remove(self._last_good_mac)
-            macs.insert(0, self._last_good_mac)
-        return macs
+        if not macs:
+            return []
+        start = self._anchor % len(macs)
+        self._anchor = start + 1
+        return macs[start:] + macs[:start]
 
     def _resolve(self, mac: str) -> tuple[Any, str] | None:
         """Find the real Bluetooth address behind one stored MAC.
@@ -235,14 +251,41 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         )
 
     async def _async_close_link(self) -> None:
-        """Drop whatever link is currently open. One at a time - this radio is
-        shared with every other Bluetooth integration on the box."""
+        """Drop the current link and wait until it is genuinely gone.
+
+        `disconnect()` returning only means bleak has asked; the stack may
+        still be unwinding. Beginning the next connect during that window is
+        what made a 45s poll interval fail outright rather than merely run
+        late, so this confirms the client reports itself disconnected and
+        then pauses on top of that.
+
+        A harvest link is usually already dead when this runs - the firmware
+        drops it - so the common path here is a no-op that returns at once.
+        """
         client, self._client, self.session = self._client, None, None
-        if client is not None:
+        if client is None:
+            return
+        try:
+            await client.disconnect()
+        except Exception:  # best effort - the link is often already gone
+            _LOGGER.debug("%s: error closing link", self.mesh_name, exc_info=True)
+
+        deadline = time.monotonic() + DISCONNECT_CONFIRM_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
             try:
-                await client.disconnect()
-            except Exception:
-                _LOGGER.debug("%s: error closing link", self.mesh_name, exc_info=True)
+                if not client.is_connected:
+                    break
+            except Exception:  # a client too far gone to ask is gone enough
+                break
+            await asyncio.sleep(0.25)
+        else:
+            _LOGGER.debug(
+                "%s: link never confirmed disconnect within %.0fs; continuing "
+                "anyway, the next connect may suffer for it",
+                self.mesh_name,
+                DISCONNECT_CONFIRM_TIMEOUT_SECONDS,
+            )
+        await asyncio.sleep(DISCONNECT_SETTLE_SECONDS)
 
     async def _connect_to(self, mac: str) -> BleMeshSession | None:
         resolved = self._resolve(mac)
@@ -282,7 +325,6 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return None
 
         self._client = client
-        self._last_good_mac = mac
         return session
 
     async def _async_ensure_connected(self) -> BleMeshSession:

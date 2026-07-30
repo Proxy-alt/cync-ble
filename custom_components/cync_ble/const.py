@@ -96,6 +96,19 @@ MAX_CONNECT_ATTEMPTS = 4
 # briefly was, and normal connection variance reads as failure.
 REFRESH_TIMEOUT_SECONDS = 75
 
+# `disconnect()` returning is not the same as the stack having finished
+# tearing the link down. Starting the next connect while the previous one is
+# still unwinding is the churn a 45s poll interval collapsed under - 100%
+# failure once it began, rather than gradual degradation. So teardown waits
+# for the client to actually report itself disconnected, then pauses briefly
+# on top.
+#
+# The settle pause is empirical, not derived: BlueZ exposes no "fully torn
+# down" signal to wait on, so this is a guess with a margin rather than a
+# guarantee.
+DISCONNECT_CONFIRM_TIMEOUT_SECONDS = 10.0
+DISCONNECT_SETTLE_SECONDS = 2.0
+
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.
 BROADCAST_ADDRESS = 0
