@@ -1,17 +1,17 @@
 """Config flow for Cync Bluetooth.
 
-Mirrors cync-lan's own config flow for the account-login/OTP steps (see its
-module docstring for why cync_lan.cloud_api reads credentials from process
-env vars rather than call arguments, and why that limits this integration to
-one Cync account per Home Assistant instance too - unique_id enforcement
-below exists for the same reason).
+Account login → one-time code → pick a home → done. The account is used
+once, here, to fetch that home's Telink mesh credentials and device list;
+everything after setup is local.
 
-Diverges from it after login: cync-lan's export covers every home on the
-account at once, because its TCP daemon can juggle every device regardless
-of which physical mesh it belongs to. A single BleMeshSession can only ever
-be authenticated against one mesh's name/password, so this flow has an extra
-step cync-lan's doesn't need - picking which home's mesh to control, when the
-account has more than one.
+Talks to `.cloud`, this integration's own small client, rather than
+`cync_lan.cloud_api` - see that module's docstring for why sharing
+cync-lan's env-var-configured singleton silently breaks when both
+integrations are installed together.
+
+Unlike cync-lan, which exports every home at once, this picks exactly one:
+a `BleMeshSession` authenticates against a single mesh's name and password,
+so one config entry is one home. Add the integration again for another.
 """
 
 from __future__ import annotations
@@ -21,9 +21,10 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .classify import is_light, is_switch
+from .cloud import CyncAuthError, CyncCloud, CyncCloudError
 from .const import (
     CONF_ACCOUNT_PASSWORD,
     CONF_ACCOUNT_USERNAME,
@@ -33,7 +34,6 @@ from .const import (
     CONF_MESH_PASSWORD,
     DOMAIN,
 )
-from .util import configure_environment, get_cloud_api, read_exported_homes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,47 +46,25 @@ STEP_USER_SCHEMA = vol.Schema(
 STEP_OTP_SCHEMA = vol.Schema({vol.Required("otp_code"): str})
 
 
-class InvalidAuth(HomeAssistantError):
-    """Username/password rejected."""
+def _controllable(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The subset of a home's devices this integration can represent.
 
-
-class InvalidOtp(HomeAssistantError):
-    """OTP code rejected."""
-
-
-def _usable_devices(raw_devices: dict) -> list[dict[str, Any]]:
-    """Flatten a home's exported device dict to the light/switch subset this
-    integration can represent, in the shape the coordinator/platforms expect.
-
-    Devices with no BLE mac (impossible for a real export, since every entry
-    cloud_api._parse_raw_export writes has one) or that classify as neither a
-    light nor a switch (fan controllers, sensors, thermostats - not yet
-    built, see ARCHITECTURE.md's build order) are skipped rather than
-    guessed at.
+    Anything that is neither a light nor a switch - fan controllers,
+    sensors, thermostats - is dropped rather than guessed at, per
+    ARCHITECTURE.md's build order.
     """
-    usable: list[dict[str, Any]] = []
-    for dev_id, dev in raw_devices.items():
-        dev_type = dev.get("type")
-        mac = dev.get("mac")
-        if dev_type is None or not mac:
-            continue
-        if not (is_light(dev_type) or is_switch(dev_type)):
+    keep = []
+    for device in devices:
+        if is_light(device["type"]) or is_switch(device["type"]):
+            keep.append(device)
+        else:
             _LOGGER.debug(
-                "Skipping device %r (type %s): not yet supported by cync_ble "
-                "(switch/light only)",
-                dev.get("name"),
-                dev_type,
+                "Skipping %r (device type %s): cync_ble covers switches and "
+                "lights so far",
+                device["name"],
+                device["type"],
             )
-            continue
-        usable.append(
-            {
-                "id": int(dev_id),
-                "name": dev.get("name") or f"device_{dev_id}",
-                "type": dev_type,
-                "mac": mac,
-            }
-        )
-    return usable
+    return keep
 
 
 class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -95,10 +73,11 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
+        self._cloud: CyncCloud | None = None
         self._username: str | None = None
         self._password: str | None = None
-        self._homes: dict[str, dict] = {}
-        self._chosen_home_name: str | None = None
+        self._homes: dict[str, dict[str, Any]] = {}
+        self._chosen: str | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -107,20 +86,14 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._username = user_input[CONF_ACCOUNT_USERNAME]
             self._password = user_input[CONF_ACCOUNT_PASSWORD]
-
-            await configure_environment(self.hass, self._username, self._password)
+            self._cloud = CyncCloud(async_get_clientsession(self.hass))
             try:
-                api = get_cloud_api(self.hass)
-                have_token = await api.check_token()
-                if have_token:
-                    return await self._finish_export()
-                requested = await api.request_otp()
-                if not requested:
-                    raise InvalidAuth
-            except InvalidAuth:
+                await self._cloud.request_otp(self._username)
+            except CyncAuthError as err:
+                _LOGGER.debug("Cync rejected the account %s: %s", self._username, err)
                 errors["base"] = "invalid_auth"
-            except Exception:
-                _LOGGER.exception("Unexpected error talking to the Cync cloud API")
+            except CyncCloudError:
+                _LOGGER.exception("Could not reach the Cync cloud API")
                 errors["base"] = "cannot_connect"
             else:
                 return await self.async_step_otp()
@@ -134,56 +107,58 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            assert self._cloud is not None
+            assert self._username is not None
+            assert self._password is not None
             try:
-                api = get_cloud_api(self.hass)
-                ok = await api.send_otp(int(user_input["otp_code"]))
-                if not ok:
-                    raise InvalidOtp
-            except (InvalidOtp, ValueError):
+                code = int(user_input["otp_code"])
+            except ValueError:
                 errors["base"] = "invalid_otp"
-            except Exception:
-                _LOGGER.exception(
-                    "Unexpected error submitting OTP to the Cync cloud API"
-                )
-                errors["base"] = "cannot_connect"
             else:
-                return await self._finish_export()
+                try:
+                    await self._cloud.login(self._username, self._password, code)
+                except CyncAuthError as err:
+                    _LOGGER.debug("Cync rejected the one-time code: %s", err)
+                    errors["base"] = "invalid_otp"
+                except CyncCloudError:
+                    _LOGGER.exception("Could not reach the Cync cloud API")
+                    errors["base"] = "cannot_connect"
+                else:
+                    return await self._async_load_homes()
 
         return self.async_show_form(
             step_id="otp", data_schema=STEP_OTP_SCHEMA, errors=errors
         )
 
-    async def _finish_export(self) -> config_entries.ConfigFlowResult:
-        """Pull the account's homes, so a bad account/empty export fails
-        here rather than producing zero entities after setup finishes."""
-        api = get_cloud_api(self.hass)
-        exported = await api.export_config_file()
-        if not exported:
+    async def _async_load_homes(self) -> config_entries.ConfigFlowResult:
+        """Fetch the account's homes, so an account with nothing this
+        integration can drive fails here rather than after setup finishes
+        with zero entities."""
+        assert self._cloud is not None
+        try:
+            homes = await self._cloud.async_get_homes()
+        except CyncCloudError:
+            _LOGGER.exception("Could not read the device list from the Cync cloud API")
             return self.async_show_form(
                 step_id="user",
                 data_schema=STEP_USER_SCHEMA,
-                errors={"base": "no_devices"},
+                errors={"base": "cannot_connect"},
             )
 
-        config_dir = self.hass.config.path("cync_ble")
-        homes = await read_exported_homes(config_dir)
-        # Only homes with at least one light/switch this integration can
-        # actually control are worth offering - an empty mesh, or one that's
-        # entirely sensors/thermostats today, isn't a usable choice.
-        self._homes = {
-            name: home
-            for name, home in homes.items()
-            if _usable_devices(home.get("devices", {}))
-        }
+        self._homes = {}
+        for home in homes:
+            controllable = _controllable(home["devices"])
+            if controllable:
+                self._homes[home["name"]] = {**home, "devices": controllable}
+
         if not self._homes:
             return self.async_show_form(
                 step_id="user",
                 data_schema=STEP_USER_SCHEMA,
                 errors={"base": "no_devices"},
             )
-
         if len(self._homes) == 1:
-            self._chosen_home_name = next(iter(self._homes))
+            self._chosen = next(iter(self._homes))
             return await self.async_step_confirm()
         return await self.async_step_select_home()
 
@@ -191,7 +166,7 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         if user_input is not None:
-            self._chosen_home_name = user_input[CONF_HOME_NAME]
+            self._chosen = user_input[CONF_HOME_NAME]
             return await self.async_step_confirm()
 
         return self.async_show_form(
@@ -204,29 +179,27 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        assert self._chosen_home_name is not None
-        home = self._homes[self._chosen_home_name]
-        devices = _usable_devices(home.get("devices", {}))
+        assert self._chosen is not None
+        home = self._homes[self._chosen]
 
         if user_input is not None:
-            # unique-config-entry: one mesh, one config entry. The home's own
-            # mac (the mesh name - see cync_lan.ble_mesh.mesh_credentials_from_home)
-            # is the natural unique id, stable across re-runs of this flow.
-            await self.async_set_unique_id(str(home["mac"]))
+            # unique-config-entry: one mesh, one entry. The mesh name is the
+            # home's own identity and is stable across re-runs of this flow.
+            await self.async_set_unique_id(home["mesh_name"])
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
-                title=self._chosen_home_name,
+                title=self._chosen,
                 data={
-                    CONF_MESH_NAME: str(home["mac"]),
-                    CONF_MESH_PASSWORD: str(home["access_key"]),
-                    CONF_DEVICES: devices,
+                    CONF_MESH_NAME: home["mesh_name"],
+                    CONF_MESH_PASSWORD: home["mesh_password"],
+                    CONF_DEVICES: home["devices"],
                 },
             )
 
         return self.async_show_form(
             step_id="confirm",
             description_placeholders={
-                "home_name": self._chosen_home_name,
-                "device_count": str(len(devices)),
+                "home_name": self._chosen,
+                "device_count": str(len(home["devices"])),
             },
         )

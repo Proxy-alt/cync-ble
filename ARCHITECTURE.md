@@ -99,6 +99,42 @@ They do **not** come from the hub. `cync-lan`'s `query_mesh_credentials` button
 implies otherwise and cannot work, because hub commands currently get no reply
 at all.
 
+### Setup talks to the cloud through its own client, not `cync_lan.cloud_api`
+
+The first version reused `cync_lan.cloud_api.CyncCloudAPI`, since it already
+spoke every endpoint setup needs. That was wrong, and it took a real install to
+show why: `CyncCloudAPI` is a **process-wide singleton** configured entirely
+through **environment variables that `cync_lan.const` reads once, at import
+time**. Both are reasonable for the standalone add-on it was written for — one
+account, one process — and cync-lan's own integration documents the resulting
+single-account limit openly.
+
+They do not survive a *second* integration in the same Home Assistant process,
+which is exactly what this is. With cync-lan installed alongside and setting up
+first, reproduced directly:
+
+- `CYNC_CONFIG_DIR` no longer has any effect, so this integration's writes
+  landed in cync-lan's directory while its reads looked in its own — a
+  `FileNotFoundError` that a broad `except Exception` then reported to the user
+  as **"could not reach the Cync cloud API"**, sending them to look at their
+  network for a bug that was a local path mismatch;
+- `CYNC_ACCOUNT_USERNAME`/`_PASSWORD` no longer have any effect either, so
+  credentials typed into this integration's wizard were **silently ignored** and
+  cync-lan's account used instead — the worst failure here, because it looks
+  like success;
+- `CyncCloudAPI()` returns cync-lan's live instance, cached token and all.
+
+So setup now uses `cloud.py`, a small client of this integration's own: four
+endpoints, every input an argument, no module state, nothing written to disk.
+That also removes the YAML round-trip, the on-disk token cache, and the Fernet
+secret those needed — none of which this integration ever wanted, and the last
+of which was writing `0777` files.
+
+The general lesson is worth keeping: **a library configured by import-time
+globals cannot be shared by two integrations**, however convenient its API
+looks. Sibling projects sharing protocol code is right; sharing process-global
+configuration is not.
+
 ### `iot_class` is `local_polling` — via `local_push` and back again
 
 This section has been wrong twice, so the reasoning is laid out rather than the

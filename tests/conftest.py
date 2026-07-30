@@ -41,96 +41,70 @@ def auto_stub_bluetooth_dependency(hass):
     hass.config.components.add("bluetooth_adapters")
 
 
-@pytest.fixture
-def mock_cloud_api():
-    """Patch cync_lan.cloud_api.CyncCloudAPI for config flow tests, so no
-    real network calls happen."""
-    with patch("cync_lan.cloud_api.CyncCloudAPI") as mock_cls:
-        instance = mock_cls.return_value
-        instance.check_token = AsyncMock(return_value=False)
-        instance.request_otp = AsyncMock(return_value=True)
-        instance.send_otp = AsyncMock(return_value=True)
-        instance.export_config_file = AsyncMock(return_value=True)
-        yield instance
-
-
-# A single usable (switch-classified) device, in the shape
-# cloud_api._parse_raw_export writes into `exported_homes.<home>.devices`.
-ONE_SWITCH_DEVICE = {
-    1: {"name": "Kitchen Switch", "type": 1, "mac": "AA:BB:CC:DD:EE:01"}
+# Real device types from cync_lan's own model map, deliberately not mocked:
+# 38 is a plain wired switch, 5 a light, 96 a motion sensor. Classification
+# is real logic worth exercising - an earlier revision of these fixtures
+# patched is_light/is_switch away and so never noticed it was feeding in a
+# type the map classifies as "unknown".
+SWITCH = {"id": 1, "name": "Kitchen Switch", "type": 38, "mac": "AA:BB:CC:DD:EE:01"}
+LIGHT = {"id": 2, "name": "Lamp", "type": 5, "mac": "AA:BB:CC:DD:EE:02"}
+MOTION_SENSOR = {
+    "id": 3,
+    "name": "Motion Sensor",
+    "type": 96,
+    "mac": "AA:BB:CC:DD:EE:03",
 }
 
 
-@pytest.fixture
-def mock_single_home():
-    """One home, one usable device - the common case."""
-    homes = {
-        "My Home": {
-            "mac": "meshname1",
-            "access_key": "meshpass1",
-            "id": "home-1",
-            "devices": ONE_SWITCH_DEVICE,
-        }
+def _home(name: str, mesh: str, devices: list[dict]) -> dict:
+    return {
+        "name": name,
+        "mesh_name": mesh,
+        "mesh_password": f"{mesh}-password",
+        "devices": devices,
     }
-    with (
-        patch(
-            "custom_components.cync_ble.config_flow.read_exported_homes",
-            new=AsyncMock(return_value=homes),
-        ),
-        patch("custom_components.cync_ble.config_flow.is_light", return_value=False),
-        patch("custom_components.cync_ble.config_flow.is_switch", return_value=True),
-    ):
-        yield homes
 
 
 @pytest.fixture
-def mock_multiple_homes():
-    """Two homes, each with one usable device."""
-    homes = {
-        "Home A": {
-            "mac": "meshnameA",
-            "access_key": "meshpassA",
-            "id": "home-a",
-            "devices": {1: {"name": "A Switch", "type": 1, "mac": "AA:BB:CC:DD:EE:01"}},
-        },
-        "Home B": {
-            "mac": "meshnameB",
-            "access_key": "meshpassB",
-            "id": "home-b",
-            "devices": {2: {"name": "B Switch", "type": 1, "mac": "AA:BB:CC:DD:EE:02"}},
-        },
-    }
-    with (
-        patch(
-            "custom_components.cync_ble.config_flow.read_exported_homes",
-            new=AsyncMock(return_value=homes),
-        ),
-        patch("custom_components.cync_ble.config_flow.is_light", return_value=False),
-        patch("custom_components.cync_ble.config_flow.is_switch", return_value=True),
-    ):
-        yield homes
+def mock_cloud():
+    """Patch the CyncCloud class the config flow constructs, so no real
+    network calls happen. Yields the instance the flow will receive."""
+    with patch(
+        "custom_components.cync_ble.config_flow.CyncCloud", autospec=True
+    ) as cls:
+        cloud = cls.return_value
+        cloud.request_otp = AsyncMock(return_value=None)
+        cloud.login = AsyncMock(return_value=None)
+        cloud.async_get_homes = AsyncMock(
+            return_value=[_home("My Home", "meshname1", [SWITCH])]
+        )
+        yield cloud
 
 
 @pytest.fixture
-def mock_no_usable_devices():
-    """One home, but its only device doesn't classify as light or switch -
-    e.g. a sensor - so it must be treated the same as an empty account."""
-    homes = {
-        "Empty Home": {
-            "mac": "meshname1",
-            "access_key": "meshpass1",
-            "id": "home-1",
-            "devices": {
-                1: {"name": "Motion Sensor", "type": 96, "mac": "AA:BB:CC:DD:EE:01"}
-            },
-        }
-    }
-    with (
-        patch(
-            "custom_components.cync_ble.config_flow.read_exported_homes",
-            new=AsyncMock(return_value=homes),
-        ),
-        patch("custom_components.cync_ble.config_flow.is_light", return_value=False),
-        patch("custom_components.cync_ble.config_flow.is_switch", return_value=False),
-    ):
-        yield homes
+def multiple_homes(mock_cloud):
+    """Two homes, each with one controllable device."""
+    homes = [
+        _home("Home A", "meshnameA", [{**SWITCH, "name": "A Switch"}]),
+        _home("Home B", "meshnameB", [{**SWITCH, "id": 2, "name": "B Switch"}]),
+    ]
+    mock_cloud.async_get_homes = AsyncMock(return_value=homes)
+    return homes
+
+
+@pytest.fixture
+def mixed_devices(mock_cloud):
+    """One home with a switch, a light, and a motion sensor - the sensor
+    must be dropped and the other two kept."""
+    home = _home("Mixed", "meshname1", [SWITCH, LIGHT, MOTION_SENSOR])
+    mock_cloud.async_get_homes = AsyncMock(return_value=[home])
+    return home
+
+
+@pytest.fixture
+def no_controllable_devices(mock_cloud):
+    """One home whose only device is a motion sensor - neither a light nor a
+    switch, so the home must be treated as unusable."""
+    home = _home("Sensors Only", "meshname1", [MOTION_SENSOR])
+    mock_cloud.async_get_homes = AsyncMock(return_value=[home])
+    return home

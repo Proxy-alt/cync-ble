@@ -18,9 +18,11 @@
 integration.** No DNS redirection. No cloud in the loop at runtime.
 
 > [!WARNING]
-> **Early and untested against a live Home Assistant install.** Config flow,
-> coordinator, and switch/light platforms exist and pass their own test suite,
-> but nobody has installed this on a real Home Assistant yet. No colour
+> **Early. Setup has been run against a live Home Assistant install; nothing
+> past it has.** Config flow, coordinator, and switch/light platforms exist and
+> pass their own test suite. The config flow has been exercised on a real
+> install — which is how the cloud-client rewrite below was found — but no
+> device has yet been controlled through this integration end to end. No colour
 > temperature or RGB control - not confirmed over this transport, see below.
 > No confirmed live state readback - every entity assumes the last command it
 > sent succeeded, not anything read back from the device (see ARCHITECTURE.md's
