@@ -23,11 +23,15 @@ CONF_DEVICES = "devices"
 # mesh's entry point (mesh relay means any one of them reaches every device -
 # see ARCHITECTURE.md).
 
-# How often to harvest the mesh's state - see HARVEST_WINDOW_SECONDS. Each
-# cycle costs one sacrificial BLE connection on a radio Home Assistant shares
-# with everything else, so this is deliberately unhurried rather than as fast
-# as the transport would allow.
-DEFAULT_REFRESH_INTERVAL_SECONDS = 300
+# How often to harvest the mesh's state. Each cycle costs one BLE connection
+# on a radio Home Assistant shares with every other Bluetooth integration, so
+# this trades responsiveness against how much of that radio we occupy.
+#
+# Viable only because the sweep itself turned out to be near-instant - see
+# HARVEST_WINDOW_SECONDS. With the original 25s window a cycle took ~43s and
+# this could not have gone below several minutes without occupying the
+# adapter almost continuously.
+DEFAULT_REFRESH_INTERVAL_SECONDS = 45
 
 # Every refresh takes a "harvest": one deliberately sacrificial connection
 # that subscribes, collects the status sweep the mesh emits, and loses the
@@ -44,7 +48,17 @@ DEFAULT_REFRESH_INTERVAL_SECONDS = 300
 #
 # Confirmed correct end to end: a device driven to 60 then 25 then off read
 # back as exactly 60, 25 and 0.
-HARVEST_WINDOW_SECONDS = 25
+#
+# The window is short because the sweep is: measured on a 46-node mesh, all
+# 38 responding devices reported within **1.1 seconds** of the enable-write
+# (50% inside 0.5s). The first implementation waited 25s for data that had
+# entirely arrived in the first second, which held the shared adapter ~23x
+# longer than necessary and is what made a fast poll interval impossible.
+#
+# Kept at several times the observed figure rather than trimmed to it - a
+# quiet mesh or a more distant relay node has room, and the cost of being
+# generous here is now small.
+HARVEST_WINDOW_SECONDS = 4
 
 # How many nodes to try before giving up on reaching the mesh this cycle.
 # Mesh relay means any single one reaches everything, so walking the whole
@@ -56,9 +70,12 @@ MAX_CONNECT_ATTEMPTS = 4
 # Hard ceiling on one refresh, harvest included. Capping the number of
 # attempts was not enough on real hardware - bleak_retry_connector runs its
 # own retry ladder inside a single establish_connection call, so a handful of
-# attempts is a handful of ladders. Must comfortably exceed
-# HARVEST_WINDOW_SECONDS plus the connections around it.
-REFRESH_TIMEOUT_SECONDS = 90
+# attempts is a handful of ladders.
+#
+# Deliberately below DEFAULT_REFRESH_INTERVAL_SECONDS: a refresh that outlives
+# its own interval would have the next one queued behind it permanently, and
+# the adapter would never be handed back.
+REFRESH_TIMEOUT_SECONDS = 35
 
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.
