@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Proxy-alt/cync-lan/feature/ha-custom-component/custom_components/cync_lan/brand/logo%402x.png" alt="Cync LAN" width="420">
+  <img src="custom_components/cync_ble/brand/icon@2x.png" alt="Cync BLE" width="128">
 </p>
 
 # Cync Bluetooth
