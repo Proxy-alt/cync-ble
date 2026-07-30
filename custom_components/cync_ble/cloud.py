@@ -15,15 +15,20 @@ that can be installed alongside cync-lan in the same Home Assistant
 process. Confirmed by reproducing it directly: when cync-lan sets up first,
 `cync_lan.const` freezes its paths, and afterwards
 
+- `CyncCloudAPI()` hands back cync-lan's live instance, token cache and
+  all. On the install this was found on, that meant `check_token()` picked
+  up cync-lan's *expired* token and tried to refresh it - a path a fresh
+  install has no way to reach, and one that was itself broken (fixed
+  separately in cync-lan). The resulting exception was reported to the user
+  as "could not reach the Cync cloud API", which is how a bug in neither
+  the cloud nor this integration ended up presenting as a network fault
+  here;
 - setting `CYNC_CONFIG_DIR` has no effect, so cync_ble's writes land in
-  cync-lan's directory while its reads look in cync_ble's - which surfaced
-  as a `FileNotFoundError` reported to the user as "could not reach the
-  Cync cloud API";
+  cync-lan's directory while its reads look in cync_ble's;
 - `CYNC_ACCOUNT_USERNAME`/`_PASSWORD` also have no effect, so credentials
   typed into cync_ble's wizard are silently ignored and the *other*
-  account's are used instead;
-- `CyncCloudAPI()` hands back cync-lan's live instance, token cache and
-  all.
+  account's are used instead - the worst of the three, because it looks
+  like it worked.
 
 So this talks to the four endpoints setup actually needs, taking every
 input as an argument. It holds no module state, writes nothing to disk, and

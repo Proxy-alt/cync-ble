@@ -113,16 +113,20 @@ They do not survive a *second* integration in the same Home Assistant process,
 which is exactly what this is. With cync-lan installed alongside and setting up
 first, reproduced directly:
 
-- `CYNC_CONFIG_DIR` no longer has any effect, so this integration's writes
-  landed in cync-lan's directory while its reads looked in its own — a
-  `FileNotFoundError` that a broad `except Exception` then reported to the user
-  as **"could not reach the Cync cloud API"**, sending them to look at their
-  network for a bug that was a local path mismatch;
-- `CYNC_ACCOUNT_USERNAME`/`_PASSWORD` no longer have any effect either, so
-  credentials typed into this integration's wizard were **silently ignored** and
-  cync-lan's account used instead — the worst failure here, because it looks
-  like success;
-- `CyncCloudAPI()` returns cync-lan's live instance, cached token and all.
+- `CyncCloudAPI()` returns cync-lan's live instance, cached token and all. That
+  is what produced the reported symptom: `check_token()` found cync-lan's
+  *expired* token — something a fresh install could never reach — and tried to
+  refresh it, down a code path that turned out to be broken in cync-lan itself
+  (its refresh could never have succeeded; fixed there separately). The
+  exception escaped a method declared to return `bool`, hit a broad
+  `except Exception` here, and was reported as **"could not reach the Cync
+  cloud API"** — sending the user to check their network for a bug that was in
+  neither the network nor, originally, this integration;
+- `CYNC_CONFIG_DIR` no longer has any effect either, so this integration's
+  writes landed in cync-lan's directory while its reads looked in its own;
+- `CYNC_ACCOUNT_USERNAME`/`_PASSWORD` likewise, so credentials typed into this
+  integration's wizard were **silently ignored** and cync-lan's account used
+  instead — the worst of the three, because it looks like success.
 
 So setup now uses `cloud.py`, a small client of this integration's own: four
 endpoints, every input an argument, no module state, nothing written to disk.
