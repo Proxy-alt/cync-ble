@@ -57,6 +57,16 @@ SUBSCRIBE_RETRY_INTERVAL_SECONDS = 1800
 # retries a not-ready entry in the background rather than blocking on it.
 MAX_CONNECT_ATTEMPTS = 4
 
+# Hard ceiling on one refresh, including everything it does to get a link up.
+# Capping the number of attempts turned out not to be enough on real
+# hardware: bleak_retry_connector runs its own retry ladder inside a single
+# establish_connection call, so even a handful of attempts held Home
+# Assistant's startup for minutes. Nothing here needs to be fast, but it does
+# need to be bounded - a refresh that gives up is retried on schedule, and at
+# startup Home Assistant retries a not-ready entry in the background instead
+# of waiting on it.
+REFRESH_TIMEOUT_SECONDS = 45
+
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.
 BROADCAST_ADDRESS = 0

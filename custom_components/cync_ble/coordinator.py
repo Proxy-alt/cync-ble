@@ -31,6 +31,7 @@ lets an ESPHome Bluetooth proxy stand in for a local adapter transparently.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import timedelta
@@ -51,6 +52,7 @@ from .const import (
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
     MAX_CONNECT_ATTEMPTS,
+    REFRESH_TIMEOUT_SECONDS,
     SUBSCRIBE_RETRY_INTERVAL_SECONDS,
 )
 
@@ -272,8 +274,18 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         Returns the existing device_states dict unchanged (rather than
         None) so a periodic tick with nothing new to report doesn't wipe
         out whatever an active push subscription has already delivered.
+
+        Bounded, because this is also what runs during setup: see
+        REFRESH_TIMEOUT_SECONDS.
         """
-        await self._async_ensure_connected()
+        try:
+            async with asyncio.timeout(REFRESH_TIMEOUT_SECONDS):
+                await self._async_ensure_connected()
+        except TimeoutError as exc:
+            raise UpdateFailed(
+                f"Gave up trying to reach mesh {self.mesh_name!r} after "
+                f"{REFRESH_TIMEOUT_SECONDS}s"
+            ) from exc
         return self.device_states
 
     async def _with_retry(self, call: Any) -> None:
