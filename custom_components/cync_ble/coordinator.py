@@ -130,9 +130,22 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self.session = None
 
     def _on_mesh_status(self, statuses: list[DeviceStatus]) -> None:
-        for status in statuses:
-            self.device_states[status.device_id] = status
-        self.async_set_updated_data(self.device_states)
+        """Record one notification's worth of the sweep.
+
+        Deliberately does nothing but store. This runs inside a bleak
+        notification callback during a refresh that is already in flight, and
+        bleak swallows whatever a callback raises - so anything more ambitious
+        here (notifying listeners mid-refresh, say) fails silently and takes
+        the rest of the sweep with it. Confirmed the hard way: a harvest that
+        called async_set_updated_data from here collected zero states while a
+        bare probe against the same mesh collected 38. The refresh returns
+        device_states when it finishes, which is what updates entities.
+        """
+        try:
+            for status in statuses:
+                self.device_states[status.device_id] = status
+        except Exception:  # a bad packet must not end the sweep
+            _LOGGER.debug("%s: bad status record", self.mesh_name, exc_info=True)
 
     async def _async_harvest(self) -> None:
         """One sacrificial connection that collects the mesh's own state.
