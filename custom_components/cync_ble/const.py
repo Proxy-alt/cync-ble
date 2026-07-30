@@ -27,16 +27,27 @@ CONF_DEVICES = "devices"
 # on a radio Home Assistant shares with every other Bluetooth integration, so
 # this trades responsiveness against how much of that radio we occupy.
 #
-# Set by measurement, and by getting it wrong first. Shortening the harvest
-# window (see HARVEST_WINDOW_SECONDS) cut ~21s from every cycle and made 45s
-# look reachable - it is not. The sweep was never the expensive part:
-# *connecting* is, at roughly 20s per cycle, and that cost cannot be trimmed
-# the way the window could. At 45s every refresh hit its own ceiling and
-# failed, because a contended adapter makes establish_connection slower
-# exactly when it is being asked to work hardest.
+# Set by measurement, and by getting it wrong twice.
 #
-# 120s keeps the radio free ~80% of the time while still being well over
-# twice as responsive as the 300s this started at.
+# Shortening the harvest window (see HARVEST_WINDOW_SECONDS) cut ~21s from
+# every cycle and made 45s look reachable. At 45s every refresh instead hit
+# its own ceiling and failed - not slowly degrading, but 100% failure once it
+# started, with no progress logged at all before the timeout.
+#
+# The tempting explanation, that connecting simply costs too much, is wrong: a
+# healthy cycle here takes **8-10 seconds**, nearly all of it connecting, so
+# 45s should have been ~20% duty. What actually happens is that reconnecting
+# to the same node that often produces churn the stack does not recover from -
+# a failed refresh appears to leave state behind that makes the next connect
+# fail too, so it compounds instead of degrading gently. Whether that is
+# BlueZ's teardown lagging or the device's own connection handling is **not
+# established**, so this is set from what was observed to work rather than
+# from a mechanism that is understood.
+#
+# 120s runs cleanly, leaves the radio free ~90% of the time, and is still
+# well over twice as responsive as the 300s this started at. Going faster is
+# plausibly possible with more careful teardown between cycles; it is not a
+# matter of simply lowering this number.
 DEFAULT_REFRESH_INTERVAL_SECONDS = 120
 
 # Every refresh takes a "harvest": one deliberately sacrificial connection
