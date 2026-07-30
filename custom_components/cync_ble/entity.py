@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from cync_lan.ble_mesh import DeviceStatus
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -61,23 +60,33 @@ class CyncBleEntity(CoordinatorEntity[CyncBleCoordinator]):
 
     @property
     def available(self) -> bool:
-        return super().available and self.coordinator.mesh_available
+        """Whether the last harvest worked - not whether a link is open
+        right now.
+
+        This transport is connect-on-demand by design (the vendor's own
+        client disconnects on idle too), and the harvest deliberately closes
+        its link, so "no connection at this instant" is the normal resting
+        state and says nothing about reachability.
+        """
+        return super().available
 
     @property
-    def _pushed_status(self) -> DeviceStatus | None:
-        """This device's most recent report from a live subscription, or
-        None if no subscription is currently active (the ordinary case) or
-        one is active but hasn't reported this specific device yet.
+    def reported_brightness(self) -> int | None:
+        """What the mesh last said about this device (0-100), or a command
+        issued since then, or None if nothing is known yet.
 
-        `device_states` is deliberately left in place after a push session
-        ends rather than cleared - see coordinator.py - but this only reads
-        it while `push_active` is True, so a stale entry from a since-ended
-        session doesn't get reported as current.
+        None is genuinely "no information" - a device that has never appeared
+        in a harvest and has never been commanded. Subclasses fall back to
+        their restored state there rather than inventing one.
         """
-        if not self.coordinator.push_active:
-            return None
-        return self.coordinator.device_states.get(self.target)
+        return self.coordinator.reported_brightness(self.target)
 
     @property
     def assumed_state(self) -> bool:
-        return self._pushed_status is None
+        """False once the mesh has actually reported this device.
+
+        Harvested state can be up to a refresh interval old, which is what
+        polling means - but it is a real report rather than an assumption,
+        and Home Assistant's `assumed_state` asks which of the two it is.
+        """
+        return self.coordinator.device_states.get(self.target) is None

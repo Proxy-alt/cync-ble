@@ -176,32 +176,38 @@ from a single capture and its presence rule contradicts acync's — see
 it. And `subscribe()` raises rather than returning quietly, because a refused
 subscribe leaves a dead session and a caller needs to know that.
 
-### The coordinator tries subscribing anyway — opportunistically, not by default belief
+### State comes from a deliberately sacrificial connection
 
-`local_polling` describes the guaranteed baseline, not a claim that push is
-impossible. Static analysis of the real Cync iOS app's binary (`CbyGEKit.framework`,
-see `cync-lan-research`'s `ble_ios_app_subscribe_confirmed.md`) found it calls the
-same standards-compliant `setNotifyValue` against this same characteristic, and
-ships dedicated `subscribeRetryCounter`/`subscriptionRetryTimer` machinery
-specifically for it — strong evidence from the vendor's own first-party client
-that the call is merely *unreliable*, not refused for every caller under all
-conditions.
+Subscribing to the notify characteristic is refused by this firmware and takes
+the link down with it. That was measured rather than assumed: **14 attempts,
+every one refused with GATT `UNLIKELY_ERROR`, never once accepted.** So
+imitating the retry loop the vendor's own iOS app ships (see
+`ble_ios_app_subscribe_confirmed.md`) buys nothing here — persistence is not
+the missing ingredient.
 
-So the coordinator does what the real app does: every fresh connection tries
-`subscribe()` once, rate-limited by `SUBSCRIBE_RETRY_INTERVAL_SECONDS` (30
-minutes). A refusal takes the whole connection down (confirmed on hardware,
-not a soft per-call failure), so failure means reconnecting again send-only
-before returning anything usable — and the backoff exists because retrying
-that on every reconnect would add connection churn across every device on the
-mesh, for a call with no confirmed case of ever succeeding against this
-project's own test hardware. If it ever does hold, that session's entities
-report genuinely pushed state instead of assumed state until the link drops.
+What the failed attempt *does* buy is the state. The vendor's enable-write
+starts the device reporting and BlueZ registers the callback locally, so for
+the ~30 seconds before the rejection lands the mesh streams status: **17-19
+notifications decoding to 34-38 of this mesh's 46 devices, on every single
+try.** A full picture of the house for the price of one connection.
 
-This is a real behavioural change from a pure "always assumed_state" design,
-worth being honest about: nobody has observed this subscribe succeed on a
-local BlueZ adapter, only on the vendor's own iOS stack. It may never fire in
-practice on this integration's supported platform. It costs nothing to try
-when the alternative — never trying — guarantees it never will.
+So each refresh takes a **harvest** — one connection that subscribes on
+purpose, collects the sweep, and is thrown away — while commands use a
+separate connection that never subscribes and therefore stays healthy. That
+is what makes `local_polling` honest here: entities report what the mesh said
+about itself, not merely what was last sent to it, and a physically-operated
+switch is picked up on the next cycle.
+
+The decode behind this is confirmed, not assumed. `parse_status`'s presence
+rule contradicted acync's and rested on a single capture; driving a device to
+60, then 25, then off and harvesting after each produced exactly 60, 25 and 0
+across a 38-device sweep.
+
+One ordering subtlety, learned by getting it wrong on hardware: a harvest
+taken immediately after a command can still report the *previous* value. So a
+command issued since the last harvest wins, and the mesh's own account takes
+over once a harvest lands after it. Without that rule every toggle visibly
+snaps back.
 
 ## Protocol status
 
@@ -217,8 +223,8 @@ demonstrated.
 | brightness (`0xF0` and `0xD2`) | **confirmed**, both forms |
 | colour temperature | not confirmed |
 | RGB | not confirmed |
-| status notifications | **received and decrypted** — BlueZ's `StartNotify` is refused, but the vendor's own enable-write works |
-| inbound slot layout | plausible only — one capture, and it contradicts acync |
+| status notifications | **received and decrypted** — subscribe is always refused, but the sweep arrives first; this is what the harvest exploits |
+| inbound slot layout | **confirmed** — set 60/25/off read back as 60/25/0 across a 38-device sweep |
 
 Colour temperature and RGB ride the same `0xF0` family whose brightness member
 works, so they are better founded than a guess — but nobody has moved either

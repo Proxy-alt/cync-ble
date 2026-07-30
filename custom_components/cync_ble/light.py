@@ -41,10 +41,10 @@ class CyncBleLight(CyncBleEntity, LightEntity, RestoreEntity):
     """A Cync Bluetooth light - on/off, and brightness where the device
     supports dimming.
 
-    See entity.py: state is assumed unless a live subscription is actively
-    reporting this device. `_attr_is_on`/`_attr_brightness` are the assumed
-    fallback - restored from this entity's own last known HA state on
-    startup, then only ever changed by a command this entity itself sends.
+    State comes from the mesh's own periodic report where there is one (see
+    coordinator.py's harvest). `_attr_is_on`/`_attr_brightness` are only the
+    fallback for a device that has never been harvested - restored from this
+    entity's last known Home Assistant state on startup.
     """
 
     _attr_name = None
@@ -72,17 +72,17 @@ class CyncBleLight(CyncBleEntity, LightEntity, RestoreEntity):
 
     @property
     def is_on(self) -> bool | None:
-        status = self._pushed_status
-        if status is not None:
-            return status.brightness > 0
+        brightness = self.reported_brightness
+        if brightness is not None:
+            return brightness > 0
         return self._attr_is_on
 
     @property
     def brightness(self) -> int | None:
-        status = self._pushed_status
-        if status is not None:
+        brightness = self.reported_brightness
+        if brightness is not None:
             # Device's 0-100 percentage to HA's 0-255 scale.
-            return round(status.brightness / 100 * 255)
+            return round(brightness / 100 * 255)
         return self._attr_brightness
 
     async def async_turn_on(self, **kwargs: Any) -> None:

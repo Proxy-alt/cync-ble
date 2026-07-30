@@ -5,30 +5,20 @@ ARCHITECTURE.md's "one session, not one per device": mesh relay means any
 single authenticated connection reaches every device, so this integration
 never opens more than one link at a time.
 
-There is nothing to poll here in the usual DataUpdateCoordinator sense. The
-only inbound status opcode (0xDC) arrives exclusively through the
-notification path, and subscribing to it usually kills the connection on a
-local BlueZ adapter (confirmed on hardware, see ARCHITECTURE.md). So this
-coordinator's periodic cycle is primarily a connection-health check, not a
-state fetch: absent a working subscription, entities report the last state
-they themselves commanded rather than anything read back from the device
-(`assumed_state` in HA terms).
+Each refresh takes a **harvest**: one deliberately sacrificial connection
+that subscribes, collects the status sweep the mesh emits in response, and
+loses the link ~30s later when the firmware refuses the CCCD write. See
+HARVEST_WINDOW_SECONDS in const.py for why that refusal is a price worth
+paying rather than a bug to route around.
 
-That said, "usually" is doing real work in that sentence. Static analysis of
-the real iOS app's binary found it calls the same standards-compliant
-subscribe API and ships dedicated retry-counter/retry-timer machinery for it
-- strong evidence the call is merely unreliable, not categorically refused
-for every client. So every fresh connection opportunistically tries it too
-(rate-limited - see SUBSCRIBE_RETRY_INTERVAL_SECONDS in const.py, since a
-refusal takes the whole connection down and retrying too eagerly would just
-add connection churn across the whole mesh). If it ever holds, this session
-switches from assumed to genuinely pushed state until the link drops.
+So this really is `local_polling`: entities report state the mesh itself
+reported, not merely what was last commanded. Commands are optimistic in the
+gap between sending and the next harvest, and the harvest is what settles it -
+which also means a physically-operated switch is picked up, eventually.
 
-On the one real mesh tried so far it does not hold, and it fails in a way
-worth naming: `subscribe()` returned cleanly and the link died 2 seconds
-later. So "the call did not raise" proves nothing here, and the link has to
-outlive SUBSCRIBE_SETTLE_SECONDS before push is believed - see
-`_maybe_try_subscribe`.
+Commands and harvests never share a link. A connection that has subscribed is
+a dead link walking, so the command session is kept strictly separate and is
+never the one that harvests.
 
 The BLE client is never constructed directly - always obtained through Home
 Assistant's own Bluetooth stack via `bleak_retry_connector`, which is what
@@ -57,10 +47,9 @@ from .const import (
     CONF_MESH_PASSWORD,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
+    HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
     REFRESH_TIMEOUT_SECONDS,
-    SUBSCRIBE_RETRY_INTERVAL_SECONDS,
-    SUBSCRIBE_SETTLE_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,14 +79,16 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # every reconnect when the same one keeps working fine.
         self._last_good_mac: str | None = None
 
-        # Opportunistic push - see module docstring. push_active is True only
-        # while a subscription is actually live on the current connection;
-        # device_states holds the most recent report per device id while it
-        # is, and is left in place (stale but not wrong) after it drops, for
-        # entities to fall back on until state goes assumed again.
-        self.push_active: bool = False
+        # What the mesh last told us about itself, by device id. Populated by
+        # _async_harvest and deliberately kept across reconnects: a stale
+        # reading is still better than none, and the alternative is entities
+        # blanking every time the link cycles.
         self.device_states: dict[int, DeviceStatus] = {}
-        self._next_subscribe_attempt: float = 0.0
+        self._last_harvest: float = 0.0
+        # Commands write their intent here so an entity does not visibly snap
+        # back to the pre-command value while waiting for the next harvest.
+        # Cleared per device once a harvest newer than the command lands.
+        self.optimistic: dict[int, tuple[float, int]] = {}
 
     @property
     def mesh_available(self) -> bool:
@@ -137,77 +128,72 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         _LOGGER.debug("%s: mesh link disconnected", self.mesh_name)
         self._client = None
         self.session = None
-        # Deliberately does NOT touch _next_subscribe_attempt: an ordinary
-        # disconnect (out of range, idle timeout, HA restart) after a session
-        # that WAS pushing state is worth retrying immediately on reconnect,
-        # not backed off - only an explicit refusal inside
-        # _maybe_try_subscribe earns the backoff.
-        self.push_active = False
 
     def _on_mesh_status(self, statuses: list[DeviceStatus]) -> None:
         for status in statuses:
             self.device_states[status.device_id] = status
         self.async_set_updated_data(self.device_states)
 
-    async def _maybe_try_subscribe(self, session: BleMeshSession) -> BleMeshSession:
-        """Opportunistically try upgrading a freshly (re)connected session
-        to live push updates - see module docstring for why this is
-        attempted at all, and why it's rate-limited.
+    async def _async_harvest(self) -> None:
+        """One sacrificial connection that collects the mesh's own state.
 
-        A refused subscribe takes the WHOLE connection down, not just the
-        notification path (confirmed on hardware - see
-        `cync_lan.ble_mesh.BleMeshSession.subscribe`'s own docstring). So a
-        failure here means reconnecting again, send-only, before returning
-        anything usable to the caller.
+        Subscribing is what kills the link - measured as invariant on this
+        firmware (14 attempts, always GATT UNLIKELY_ERROR, never accepted).
+        This does it deliberately anyway, because the attempt is what makes
+        the mesh report: a full sweep of 34-38 devices arrives in the seconds
+        before the rejection lands.
 
-        **`subscribe()` returning is not success.** Observed on real
-        hardware: it returned cleanly, and the link dropped 2 seconds
-        later. Because only an explicit refusal was being backed off, every
-        reconnect subscribed again and killed the link again - a loop that
-        left entities flipping between pushed and assumed state, which is
-        what "the toggle snaps back" looked like from the outside. So the
-        link now has to still be up after `SUBSCRIBE_SETTLE_SECONDS` before
-        this claims push works, and a link that dies in that window is
-        treated exactly like a refusal.
+        Deliberately its own connection, torn down afterwards. A link that has
+        subscribed is a dead link walking, so the command session must never
+        be the one that harvests.
         """
-        if self.push_active or time.monotonic() < self._next_subscribe_attempt:
-            return session
+        await self._async_close_link()
 
-        def _give_up(reason: str) -> None:
-            _LOGGER.debug(
-                "%s: opportunistic subscribe %s; staying on send-only "
-                "polling, retrying in %ds",
-                self.mesh_name,
-                reason,
-                SUBSCRIBE_RETRY_INTERVAL_SECONDS,
-            )
-            self._next_subscribe_attempt = (
-                time.monotonic() + SUBSCRIBE_RETRY_INTERVAL_SECONDS
-            )
-            self.push_active = False
-            self.session = None
-            self._client = None
+        session = None
+        for mac in [m for m in self._candidate_macs() if self._resolve(m)][
+            :MAX_CONNECT_ATTEMPTS
+        ]:
+            session = await self._connect_to(mac)
+            if session is not None:
+                break
+        if session is None:
+            _LOGGER.debug("%s: no node reachable for a harvest", self.mesh_name)
+            return
 
+        before = len(self.device_states)
         try:
-            await session.subscribe(self._on_mesh_status)
-        except BleMeshError as exc:
-            _give_up(f"was refused ({exc})")
-            return await self._async_ensure_connected()
-
-        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
-        if not session.authenticated:
-            _give_up(
-                f"was accepted but the link dropped within {SUBSCRIBE_SETTLE_SECONDS}s"
+            # subscribe() does the vendor enable-write and then the subscribe
+            # that will be refused. Bounded rather than awaited to completion:
+            # the refusal takes ~30s to arrive and the sweep is long finished
+            # by then, so waiting for it only holds the radio.
+            await asyncio.wait_for(
+                session.subscribe(self._on_mesh_status),
+                timeout=HARVEST_WINDOW_SECONDS,
             )
-            return await self._async_ensure_connected()
+        except (TimeoutError, BleMeshError):
+            pass
+        except Exception as exc:
+            _LOGGER.debug("%s: harvest ended early: %s", self.mesh_name, exc)
+        finally:
+            await self._async_close_link()
 
-        self.push_active = True
-        _LOGGER.info(
-            "%s: mesh accepted a live status subscription and the link "
-            "survived - using pushed state for this session",
+        self._last_harvest = time.monotonic()
+        _LOGGER.debug(
+            "%s: harvest collected %d device states (%d new)",
             self.mesh_name,
+            len(self.device_states),
+            len(self.device_states) - before,
         )
-        return session
+
+    async def _async_close_link(self) -> None:
+        """Drop whatever link is currently open. One at a time - this radio is
+        shared with every other Bluetooth integration on the box."""
+        client, self._client, self.session = self._client, None, None
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                _LOGGER.debug("%s: error closing link", self.mesh_name, exc_info=True)
 
     async def _connect_to(self, mac: str) -> BleMeshSession | None:
         resolved = self._resolve(mac)
@@ -279,7 +265,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             session = await self._connect_to(mac)
             if session is not None:
                 self.session = session
-                return await self._maybe_try_subscribe(session)
+                return session
 
         if not visible:
             raise UpdateFailed(
@@ -295,44 +281,67 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         )
 
     async def _async_update_data(self) -> dict[int, DeviceStatus]:
-        """Connection-health check, not a state fetch - see module
-        docstring. Raising UpdateFailed here is what makes
-        `coordinator.last_update_success` (and therefore every entity's
-        availability) reflect real mesh reachability.
+        """Harvest the mesh's state - see the module docstring.
 
-        Returns the existing device_states dict unchanged (rather than
-        None) so a periodic tick with nothing new to report doesn't wipe
-        out whatever an active push subscription has already delivered.
+        Raising UpdateFailed is what makes `last_update_success` (and so
+        every entity's availability) reflect real mesh reachability.
 
-        Bounded, because this is also what runs during setup: see
+        Bounded, because this also runs during setup: see
         REFRESH_TIMEOUT_SECONDS.
         """
         try:
             async with asyncio.timeout(REFRESH_TIMEOUT_SECONDS):
-                await self._async_ensure_connected()
+                await self._async_harvest()
         except TimeoutError as exc:
             raise UpdateFailed(
-                f"Gave up trying to reach mesh {self.mesh_name!r} after "
+                f"Gave up harvesting mesh {self.mesh_name!r} after "
                 f"{REFRESH_TIMEOUT_SECONDS}s"
             ) from exc
+
+        if not self.device_states:
+            raise UpdateFailed(
+                f"Mesh {self.mesh_name!r} reported nothing - none of its "
+                f"{len(self.devices)} nodes could be reached"
+            )
         return self.device_states
+
+    def _record_optimistic(self, target: int, brightness: int) -> None:
+        """Remember what a command intended, so the entity does not visibly
+        snap back to the old value while waiting for the next harvest."""
+        self.optimistic[target] = (time.monotonic(), brightness)
+
+    def reported_brightness(self, target: int) -> int | None:
+        """Best current belief about one device, or None if nothing is known.
+
+        A command issued since the last harvest wins - it is newer evidence
+        than the sweep, and the mesh takes a few seconds to catch up (a
+        harvest taken immediately after a command has been observed still
+        reporting the previous value). Once a harvest lands after the
+        command, the mesh's own account takes over again.
+        """
+        pending = self.optimistic.get(target)
+        if pending is not None:
+            issued_at, brightness = pending
+            if issued_at > self._last_harvest:
+                return brightness
+            del self.optimistic[target]
+        status = self.device_states.get(target)
+        return None if status is None else status.brightness
 
     async def _with_retry(self, call: Any) -> None:
         """Run one `session -> coroutine` command, reconnecting first if
         the link isn't up, and once more if it dies mid-call.
 
-        Commands are user-initiated (a switch/light entity call) and
-        shouldn't wait for the next scheduled refresh cycle to get a
-        connection - this reconnects immediately on demand instead.
+        Commands are user-initiated and must not wait for the next scheduled
+        harvest to get a connection, so this connects on demand.
         """
         session = await self._async_ensure_connected()
         try:
             await call(session)
         except Exception as exc:
-            # bleak-level failure from a link that died between the health
-            # check above and this write. One retry against a fresh
-            # connection; a second failure is a real problem, not a
-            # transient race, and should surface.
+            # A link that died between the check above and this write. One
+            # retry against a fresh connection; a second failure is a real
+            # problem, not a transient race, and should surface.
             _LOGGER.debug(
                 "%s: command failed (%s), reconnecting and retrying once",
                 self.mesh_name,
@@ -342,15 +351,10 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             session = await self._async_ensure_connected()
             await call(session)
 
-        # A command just round-tripped over a live connection - that's a
-        # stronger, more current reachability signal than the periodic
-        # health check, and entities' `available` reads
-        # `last_update_success`. Without this, a switch that just
-        # successfully reconnected and sent a command could still report
-        # unavailable until the next scheduled refresh, up to
-        # DEFAULT_REFRESH_INTERVAL_SECONDS later. Passing the existing dict
-        # (not None) so this doesn't wipe out any pushed state already
-        # collected on this session.
+        # A command just round-tripped over a live link, which is fresher
+        # evidence of reachability than the last harvest. Without this an
+        # entity that just successfully sent a command could still read
+        # unavailable until the next scheduled refresh.
         self.async_set_updated_data(self.device_states)
 
     async def async_send(self, target: int, opcode: int, data: bytes) -> None:
@@ -358,6 +362,15 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
     async def async_set_power(self, target: int, on: bool) -> None:
         await self._with_retry(lambda session: session.set_power(target, on))
+        # An "on" with no level of its own restores whatever the device was
+        # last at, which we may know from a harvest. Falling back to full
+        # brightness is a guess, but a visible light is the right guess when
+        # the alternative is showing it as off.
+        if on:
+            known = self.reported_brightness(target) or 0
+            self._record_optimistic(target, known if known > 0 else 100)
+        else:
+            self._record_optimistic(target, 0)
 
     async def async_set_brightness(
         self, target: int, brightness: int, *, is_sol_lamp: bool = False
@@ -367,6 +380,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 target, brightness, is_sol_lamp=is_sol_lamp
             )
         )
+        self._record_optimistic(target, brightness)
 
     async def async_shutdown_session(self) -> None:
         if self._client is not None:

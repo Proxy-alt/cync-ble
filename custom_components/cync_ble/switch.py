@@ -61,13 +61,12 @@ class CyncBleSwitch(CyncBleEntity, SwitchEntity, RestoreEntity):
 
     @property
     def is_on(self) -> bool | None:
-        status = self._pushed_status
-        if status is not None:
-            # The mesh status report has no separate on/off field - a
-            # binary switch reporting through the same 0xDC slot format as
-            # dimmable devices reports its power state via brightness
-            # (0 = off), matching cync_lan's own TCP-side convention.
-            return status.brightness > 0
+        # The status report has no separate power field - a binary switch
+        # reports on/off through the same brightness byte a dimmer uses.
+        # Confirmed end to end: driving a device off made it report 0.
+        brightness = self.reported_brightness
+        if brightness is not None:
+            return brightness > 0
         return self._attr_is_on
 
     async def async_turn_on(self, **kwargs: Any) -> None:
