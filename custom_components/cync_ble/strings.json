@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect your Cync account",
+        "description": "Used once, here, to retrieve your Bluetooth mesh credentials from the Cync cloud API. After this, control is entirely local - see the README.",
+        "data": {
+          "account_username": "Email",
+          "account_password": "Password"
+        }
+      },
+      "otp": {
+        "title": "Enter the verification code",
+        "description": "Cync emailed a one-time verification code to your account email address.",
+        "data": {
+          "otp_code": "Verification code"
+        }
+      },
+      "select_home": {
+        "title": "Choose a home",
+        "description": "Your Cync account has more than one home. Each has its own Bluetooth mesh, so pick the one this integration should control - add it again for another.",
+        "data": {
+          "home_name": "Home"
+        }
+      },
+      "confirm": {
+        "title": "Confirm setup",
+        "description": "Found {device_count} controllable device(s) in \"{home_name}\". Continue to finish setup."
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid username or password.",
+      "invalid_otp": "That verification code wasn't accepted.",
+      "cannot_connect": "Could not reach the Cync cloud API. Check your internet connection and try again.",
+      "no_devices": "No controllable devices were found on this Cync account."
+    },
+    "abort": {
+      "already_configured": "This mesh is already configured."
+    }
+  }
+}

@@ -8,10 +8,13 @@
 integration.** No DNS redirection. No cloud in the loop at runtime.
 
 > [!WARNING]
-> **This is a skeleton, not a working integration yet.** The protocol underneath
-> it is confirmed on real hardware — see below — but the integration itself is
-> being built. Nothing here installs and controls anything today. Watch the repo
-> rather than filing bugs.
+> **Early and untested against a live Home Assistant install.** Config flow,
+> coordinator, and switch/light platforms exist and pass their own test suite,
+> but nobody has installed this on a real Home Assistant yet. No colour
+> temperature or RGB control - not confirmed over this transport, see below.
+> No live state readback - every entity reports the last command it sent, not
+> anything confirmed by the device (see ARCHITECTURE.md's `local_polling`
+> section for why). Not yet submitted to HACS or `home-assistant/brands`.
 
 The sibling of [`cync-lan`](https://github.com/Proxy-alt/cync-lan), which
 controls the same devices over TCP by impersonating the vendor's cloud server.
