@@ -28,13 +28,22 @@ lets an ESPHome Bluetooth proxy stand in for a local adapter transparently.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from datetime import timedelta
 from typing import Any
 
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
-from cync_lan.ble_mesh import BleMeshError, BleMeshSession, DeviceStatus
+from cync_lan.ble_mesh import (
+    NOTIFICATION_CHAR,
+    BleMeshError,
+    BleMeshSession,
+    DeviceStatus,
+    decrypt_packet,
+    mac_to_address,
+    parse_status,
+)
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -174,18 +183,45 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return
 
         before = len(self.device_states)
+        # Deliberately NOT BleMeshSession.subscribe(). That helper returns
+        # False (rather than raising) if the vendor enable-write fails, which
+        # is indistinguishable here from "subscribed and heard nothing" - and
+        # a harvest that silently collects zero is exactly the failure this
+        # had. Doing the two steps directly means each one's outcome is
+        # visible, and it matches the probe that reliably collects 34-38
+        # devices against this mesh.
+        address = mac_to_address(session._mac)
+        key = session._session_key
+
+        def _on_notification(_sender: Any, data: bytearray) -> None:
+            try:
+                clear = decrypt_packet(key, address, bytearray(data))
+                self._on_mesh_status(parse_status(bytes(clear)))
+            except Exception:  # one undecodable packet must not end the sweep
+                _LOGGER.debug(
+                    "%s: undecodable notification", self.mesh_name, exc_info=True
+                )
+
         try:
-            # subscribe() does the vendor enable-write and then the subscribe
-            # that will be refused. Bounded rather than awaited to completion:
-            # the refusal takes ~30s to arrive and the sweep is long finished
-            # by then, so waiting for it only holds the radio.
-            await asyncio.wait_for(
-                session.subscribe(self._on_mesh_status),
-                timeout=HARVEST_WINDOW_SECONDS,
+            client = self._client
+            # The vendor's own "start reporting" command - a plain value
+            # write, nothing to do with the CCCD.
+            await client.write_gatt_char(
+                NOTIFICATION_CHAR, bytes([0x01]), response=True
             )
-        except (TimeoutError, BleMeshError):
-            pass
-        except Exception as exc:
+            # This is the call that will be refused ~30s from now, taking the
+            # link with it. Bounded rather than awaited: the sweep arrives
+            # long before the refusal, and waiting for it only holds a radio
+            # that other integrations need.
+            # Timing out here is expected, and is the point: the callback
+            # was registered before the write that will be refused, so the
+            # sweep has been arriving throughout.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    client.start_notify(NOTIFICATION_CHAR, _on_notification),
+                    timeout=HARVEST_WINDOW_SECONDS,
+                )
+        except Exception as exc:  # a harvest must never be fatal
             _LOGGER.debug("%s: harvest ended early: %s", self.mesh_name, exc)
         finally:
             await self._async_close_link()
