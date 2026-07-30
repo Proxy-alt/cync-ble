@@ -184,17 +184,22 @@ Colour temperature and RGB ride the same `0xF0` family whose brightness member
 works, so they are better founded than a guess — but nobody has moved either
 over this transport, and the first release should not imply otherwise.
 
-## Not claimed yet, on purpose
+## Not claimed yet, on purpose — both since resolved
 
-Two things are switched off rather than faked, because CI should mean something:
+Two things were switched off rather than faked, because CI should mean something:
 
-- **`config_flow` is `false` in the manifest.** Hassfest correctly rejects a
-  declared config flow with no `config_flow.py` behind it. It flips to `true`
-  in the same commit that adds a working one — step 3 below.
-- **HACS validation is not in CI.** It fails on `<Validation brands>` until the
-  integration is listed in `home-assistant/brands`, and opening that pull
-  request for something which cannot yet control a device would be premature.
-  The job returns when there is something installable to validate.
+- **`config_flow` was `false` in the manifest.** Hassfest correctly rejects a
+  declared config flow with no `config_flow.py` behind it. It flipped to `true`
+  in the same commit that added a working one — step 3 below.
+- **HACS validation was not in CI.** The assumption at the time was that its
+  `<Validation brands>` check required listing this integration in
+  `home-assistant/brands`, which felt premature for something that couldn't
+  yet control a device. That assumption was wrong: HACS's own documentation
+  says a committed `custom_components/cync_ble/brand/` directory with an
+  `icon.png` satisfies the check on its own, no external listing needed. Once
+  that directory existed (see the brand-asset commits), the job was added and
+  confirmed passing against a live run — not just inferred from the docs —
+  before being left in CI for good.
 
 ## Build order
 
