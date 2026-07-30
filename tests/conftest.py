@@ -20,6 +20,27 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
+@pytest.fixture(autouse=True)
+def auto_stub_bluetooth_dependency(hass):
+    """cync_ble's manifest depends on `bluetooth_adapters`, so Home
+    Assistant insists on fully setting up the real `bluetooth` component (and
+    its own BlueZ/dbus adapter discovery) before this domain's config flow
+    can even run - which crashes in this sandboxed test environment (no real
+    Bluetooth adapter, and on macOS `bluetooth_adapters`' own D-Bus backend
+    is entirely absent, not just empty).
+
+    None of that is exercised by the config flow tests in this file
+    (config_flow.py never touches Bluetooth APIs - only coordinator.py does,
+    which isn't under test here), so real setup isn't needed at all.
+    `async_setup_component` short-circuits to True for any domain already
+    listed in `hass.config.components` - the same sanctioned bypass Home
+    Assistant's own test suite uses for a dependency that's beside the point
+    of what's actually being tested.
+    """
+    hass.config.components.add("bluetooth")
+    hass.config.components.add("bluetooth_adapters")
+
+
 @pytest.fixture
 def mock_cloud_api():
     """Patch cync_lan.cloud_api.CyncCloudAPI for config flow tests, so no
