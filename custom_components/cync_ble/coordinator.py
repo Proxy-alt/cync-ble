@@ -43,6 +43,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from . import address
 from .const import (
     CONF_DEVICES,
     CONF_MESH_NAME,
@@ -99,6 +100,29 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             macs.insert(0, self._last_good_mac)
         return macs
 
+    def _resolve(self, mac: str) -> tuple[Any, str] | None:
+        """Find the real Bluetooth address behind one stored MAC.
+
+        The cloud stores addresses without separators and, for a minority
+        of devices, byte-reversed - see address.py. Which orientation is
+        correct is decided here by asking Home Assistant's Bluetooth stack
+        which one it can actually see, rather than by guessing from the
+        stored form.
+
+        The resolved address is returned alongside the device because it
+        is also what the session key is derived from
+        (`ble_mesh.mac_to_address`). Connecting with one orientation and
+        encrypting with the other would authenticate against nothing, and
+        would do it silently.
+        """
+        for candidate in address.candidates(mac):
+            ble_device = bluetooth.async_ble_device_from_address(
+                self.hass, candidate, connectable=True
+            )
+            if ble_device is not None:
+                return ble_device, candidate
+        return None
+
     def _on_disconnect(self, _client: BleakClientWithServiceCache) -> None:
         _LOGGER.debug("%s: mesh link disconnected", self.mesh_name)
         self._client = None
@@ -154,28 +178,29 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return session
 
     async def _connect_to(self, mac: str) -> BleMeshSession | None:
-        ble_device = bluetooth.async_ble_device_from_address(
-            self.hass, mac, connectable=True
-        )
-        if ble_device is None:
+        resolved = self._resolve(mac)
+        if resolved is None:
             return None
+        ble_device, addr = resolved
         try:
             client = await establish_connection(
                 BleakClientWithServiceCache,
                 ble_device,
-                f"{DOMAIN}-{mac}",
+                f"{DOMAIN}-{addr}",
                 disconnected_callback=self._on_disconnect,
             )
         except Exception as exc:
-            _LOGGER.debug("%s: could not connect to %s: %s", self.mesh_name, mac, exc)
+            _LOGGER.debug("%s: could not connect to %s: %s", self.mesh_name, addr, exc)
             return None
 
-        session = BleMeshSession(client, mac, self.mesh_name, self.mesh_password)
+        # `addr`, not `mac` - the session key is derived from the address, so
+        # it has to be the orientation the device actually answers on.
+        session = BleMeshSession(client, addr, self.mesh_name, self.mesh_password)
         try:
             verified = await session.authenticate()
         except BleMeshError as exc:
             _LOGGER.warning(
-                "%s: pairing handshake failed via %s: %s", self.mesh_name, mac, exc
+                "%s: pairing handshake failed via %s: %s", self.mesh_name, addr, exc
             )
             await client.disconnect()
             return None
@@ -184,7 +209,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 "%s: mesh mutual auth failed via %s - check the account's mesh "
                 "credentials",
                 self.mesh_name,
-                mac,
+                addr,
             )
             await client.disconnect()
             return None

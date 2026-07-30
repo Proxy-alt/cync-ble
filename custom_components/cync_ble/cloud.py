@@ -45,6 +45,8 @@ from typing import Any
 
 import aiohttp
 
+from .address import to_colon_form
+
 API_BASE = "https://api.gelighting.com/v2/"
 # The vendor's own app identifier, same value cync_lan uses.
 CORP_ID = "1007d2ad150c4000"
@@ -185,6 +187,11 @@ def _parse_devices(bulbs: list[Any]) -> list[dict[str, Any]]:
     sub-devices (a longer remainder) are skipped: they share their parent's
     mesh address, so emitting them would create duplicate entities pointed
     at the same target.
+
+    `mac` is punctuated here but its byte order is left exactly as the cloud
+    gave it - a minority of entries are reversed, and which way round any
+    given one goes is settled against the Bluetooth stack at connect time
+    rather than guessed at here. See address.py.
     """
     devices: list[dict[str, Any]] = []
     for raw in bulbs or []:
@@ -205,7 +212,7 @@ def _parse_devices(bulbs: list[Any]) -> list[dict[str, Any]]:
                 "id": mesh_id,
                 "name": str(raw["displayName"]),
                 "type": int(raw["deviceType"]),
-                "mac": str(raw["mac"]),
+                "mac": to_colon_form(str(raw["mac"])),
             }
         )
     return devices
