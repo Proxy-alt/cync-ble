@@ -60,6 +60,7 @@ from .const import (
     DOMAIN,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
+    PROVEN_NODES,
     REFRESH_TIMEOUT_SECONDS,
 )
 
@@ -88,7 +89,9 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # Tried first on every (re)connect, since it's the anchor most
         # recently known to work - avoids scanning all ~40 mesh nodes on
         # every reconnect when the same one keeps working fine.
-        # Rotates the node each cycle starts from - see _candidate_macs.
+        # Nodes that have recently accepted a connection, most recent first.
+        # Rotated between rather than pinned to - see _candidate_macs.
+        self._proven: list[str] = []
         self._anchor: int = 0
 
         # What the mesh last told us about itself, by device id. Populated by
@@ -107,24 +110,34 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         return self.session is not None and self.session.authenticated
 
     def _candidate_macs(self) -> list[str]:
-        """Every node, rotated so a different one leads each time.
+        """Nodes to try, proven ones first, rotated among themselves.
 
-        This used to put the last-known-good node first, which is the
-        obvious choice and the wrong one: mesh relay means any node reaches
-        everything, so pinning to one device just means that device takes
-        every connect/disconnect cycle in the house. That is exactly the
-        churn pattern a fast poll interval collapsed under.
+        Two forces pull against each other here and both are real.
 
-        Rotating spreads the load with no loss - there is no such thing as a
-        better node here, only a nearer one, and unreachable candidates are
-        filtered out by `_resolve` before anything is dialled.
+        Pinning every cycle to one "known good" node means that device
+        absorbs every connect/disconnect in the house - the churn a fast
+        poll interval collapsed under. But rotating blindly across all 46
+        is worse: nodes differ enormously in whether they will accept a
+        connection at all (measured - one answered 11 of 12 attempts while
+        another refused both), and each dead end costs ~18s of
+        establish_connection before it gives up. A blind rotation spent
+        entire refresh windows dialling nodes that were never going to
+        answer.
+
+        So: rotate, but only among nodes that have actually connected
+        recently, keeping the rest as fallback. Load is spread without
+        paying for it in dead ends.
         """
         macs = [d["mac"] for d in self.devices if d.get("mac")]
         if not macs:
             return []
-        start = self._anchor % len(macs)
-        self._anchor = start + 1
-        return macs[start:] + macs[:start]
+        proven = [m for m in self._proven if m in macs]
+        rest = [m for m in macs if m not in proven]
+        if proven:
+            start = self._anchor % len(proven)
+            self._anchor = start + 1
+            proven = proven[start:] + proven[:start]
+        return proven + rest
 
     def _resolve(self, mac: str) -> tuple[Any, str] | None:
         """Find the real Bluetooth address behind one stored MAC.
@@ -325,6 +338,13 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return None
 
         self._client = client
+        # Remember this node worked. Bounded, and most-recent-first, so a
+        # node that stops answering ages out instead of being retried
+        # forever at the head of the queue.
+        if mac in self._proven:
+            self._proven.remove(mac)
+        self._proven.insert(0, mac)
+        del self._proven[PROVEN_NODES:]
         return session
 
     async def _async_ensure_connected(self) -> BleMeshSession:

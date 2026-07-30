@@ -84,6 +84,12 @@ HARVEST_WINDOW_SECONDS = 4
 # lock integration sharing the adapter.
 MAX_CONNECT_ATTEMPTS = 4
 
+# How many recently-working nodes to rotate between. Enough to spread the
+# connect/disconnect load off any single device, small enough that the list
+# stays made of nodes that genuinely answer rather than drifting back into a
+# blind walk of the whole mesh.
+PROVEN_NODES = 5
+
 # Hard ceiling on one refresh, harvest included. Capping the number of
 # attempts was not enough on real hardware - bleak_retry_connector runs its
 # own retry ladder inside a single establish_connection call, so a handful of
