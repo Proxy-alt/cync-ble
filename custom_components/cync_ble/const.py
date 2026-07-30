@@ -4,6 +4,7 @@ from __future__ import annotations
 
 DOMAIN = "cync_ble"
 MANUFACTURER = "Savant"
+MANUFACTURER = "Savant"
 
 # `cync` is the cloud integration already in home-assistant/core; this is the
 # local Bluetooth sibling, named per the yalexs_ble / switchbot convention. See
@@ -25,13 +26,27 @@ CONF_DEVICES = "devices"
 
 # No live status can be pulled on demand over this transport - the only report
 # opcode (0xDC) arrives exclusively via the notification path, and subscribing
-# to it kills the connection on a local BlueZ adapter (see ARCHITECTURE.md's
-# "iot_class is local_polling" section). So this "poll" is a periodic
-# connection-health check, not a per-device state fetch: entities report the
-# last command they sent (`assumed_state`), and the coordinator's job is
-# keeping one authenticated session alive to send the next one. Deliberately
+# to it usually kills the connection on a local BlueZ adapter (see
+# ARCHITECTURE.md's "iot_class is local_polling" section). So this "poll" is a
+# periodic connection-health check, not a per-device state fetch: entities
+# report the last command they sent (`assumed_state`) unless a subscription
+# has actually taken - see SUBSCRIBE_RETRY_INTERVAL_SECONDS below. Deliberately
 # unhurried - each cycle is a mesh round trip on a link also carrying commands.
 DEFAULT_REFRESH_INTERVAL_SECONDS = 300
+
+# The coordinator opportunistically tries the real, standards-compliant
+# subscribe path on every fresh connection - mirroring what the vendor's own
+# iOS app does (confirmed via static analysis of the real app binary: it
+# calls setNotifyValue against this same characteristic and ships dedicated
+# subscribeRetryCounter/subscriptionRetryTimer machinery specifically because
+# that call is known to fail intermittently in production - see
+# cync-lan-research's ble_ios_app_subscribe_confirmed.md). When it succeeds,
+# state becomes genuinely pushed instead of assumed for the rest of that
+# session. When it fails it takes the whole connection down (confirmed on
+# hardware - not a soft per-call failure), so a refusal is followed by this
+# long a wait before trying again, rather than retrying every reconnect and
+# adding connection churn across every device on the mesh for no benefit.
+SUBSCRIBE_RETRY_INTERVAL_SECONDS = 1800
 
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.

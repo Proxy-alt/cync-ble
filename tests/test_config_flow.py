@@ -8,7 +8,7 @@ no-usable-devices abort.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
@@ -171,11 +171,57 @@ async def test_user_step_cannot_connect(hass, mock_cloud_api):
     assert result["errors"] == {"base": "cannot_connect"}
 
 
-async def test_otp_step_cannot_connect(hass, mock_cloud_api):
+async def test_otp_step_non_numeric_code_is_invalid_otp(hass, mock_cloud_api):
+    """int(otp_code) failing is treated the same as the cloud API rejecting
+    it - both are "the code was wrong", not a connection problem."""
     result = await _start_user_step(hass)
     result = await _submit_credentials(hass, result["flow_id"])
-    mock_cloud_api.send_otp = AsyncMock(side_effect=RuntimeError("boom"))
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"otp_code": "not-a-number"}
     )
     assert result["errors"] == {"base": "invalid_otp"}
+
+
+async def test_otp_step_cannot_connect(hass, mock_cloud_api):
+    """A genuinely numeric code that still fails to submit (network error,
+    not a rejection) must hit the generic handler, not invalid_otp - unlike
+    the case above, send_otp() actually gets called here since int()
+    succeeds first."""
+    result = await _start_user_step(hass)
+    result = await _submit_credentials(hass, result["flow_id"])
+    mock_cloud_api.send_otp = AsyncMock(side_effect=RuntimeError("boom"))
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"otp_code": "123456"}
+    )
+    assert result["errors"] == {"base": "cannot_connect"}
+
+
+async def test_malformed_devices_are_skipped(hass, mock_cloud_api):
+    """A device missing `type` or `mac` in the export must be skipped
+    rather than crashing the flow - real accounts have been observed with
+    incomplete entries (see cync_lan.cloud_api's own tolerance for this)."""
+    homes = {
+        "My Home": {
+            "mac": "meshname1",
+            "access_key": "meshpass1",
+            "id": "home-1",
+            "devices": {
+                1: {"name": "Kitchen Switch", "type": 1, "mac": "AA:BB:CC:DD:EE:01"},
+                2: {"name": "No Mac", "type": 1},
+                3: {"name": "No Type", "mac": "AA:BB:CC:DD:EE:03"},
+            },
+        }
+    }
+    mock_cloud_api.check_token = AsyncMock(return_value=True)
+    with (
+        patch(
+            "custom_components.cync_ble.config_flow.read_exported_homes",
+            new=AsyncMock(return_value=homes),
+        ),
+        patch("custom_components.cync_ble.config_flow.is_light", return_value=False),
+        patch("custom_components.cync_ble.config_flow.is_switch", return_value=True),
+    ):
+        result = await _start_user_step(hass)
+        result = await _submit_credentials(hass, result["flow_id"])
+    assert result["step_id"] == "confirm"
+    assert result["description_placeholders"]["device_count"] == "1"

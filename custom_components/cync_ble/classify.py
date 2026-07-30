@@ -15,7 +15,11 @@ mis-routed to a platform that can't represent it.
 
 from __future__ import annotations
 
-from cync_lan.metadata.model_info import DeviceClassification, DeviceTypeInfo, device_type_map
+from cync_lan.metadata.model_info import (
+    DeviceClassification,
+    DeviceTypeInfo,
+    device_type_map,
+)
 
 
 def type_info(dev_type: int) -> DeviceTypeInfo | None:
@@ -33,7 +37,8 @@ def is_light(dev_type: int) -> bool:
         # speed control as its own dedicated "Fan Controller" product, so any
         # other dimmable switch type is safe to assume is a light dimmer.
         caps = info.capabilities
-        return bool(caps and getattr(caps, "dimmable", False) and not caps.fan and not caps.plug)
+        dimmable = bool(caps and getattr(caps, "dimmable", False))
+        return dimmable and not caps.fan and not caps.plug
     return False
 
 
@@ -65,7 +70,9 @@ def is_sol_lamp(dev_type: int) -> bool:
 
 def is_dimmable(dev_type: int) -> bool:
     info = type_info(dev_type)
-    return bool(info and info.capabilities and getattr(info.capabilities, "dimmable", False))
+    if info is None or info.capabilities is None:
+        return False
+    return bool(getattr(info.capabilities, "dimmable", False))
 
 
 def model_name(dev_type: int) -> str | None:

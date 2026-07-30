@@ -72,11 +72,13 @@ def mock_single_home():
             "devices": ONE_SWITCH_DEVICE,
         }
     }
-    with patch(
-        "custom_components.cync_ble.config_flow.read_exported_homes",
-        new=AsyncMock(return_value=homes),
-    ), patch("custom_components.cync_ble.config_flow.is_light", return_value=False), patch(
-        "custom_components.cync_ble.config_flow.is_switch", return_value=True
+    with (
+        patch(
+            "custom_components.cync_ble.config_flow.read_exported_homes",
+            new=AsyncMock(return_value=homes),
+        ),
+        patch("custom_components.cync_ble.config_flow.is_light", return_value=False),
+        patch("custom_components.cync_ble.config_flow.is_switch", return_value=True),
     ):
         yield homes
 
@@ -98,11 +100,13 @@ def mock_multiple_homes():
             "devices": {2: {"name": "B Switch", "type": 1, "mac": "AA:BB:CC:DD:EE:02"}},
         },
     }
-    with patch(
-        "custom_components.cync_ble.config_flow.read_exported_homes",
-        new=AsyncMock(return_value=homes),
-    ), patch("custom_components.cync_ble.config_flow.is_light", return_value=False), patch(
-        "custom_components.cync_ble.config_flow.is_switch", return_value=True
+    with (
+        patch(
+            "custom_components.cync_ble.config_flow.read_exported_homes",
+            new=AsyncMock(return_value=homes),
+        ),
+        patch("custom_components.cync_ble.config_flow.is_light", return_value=False),
+        patch("custom_components.cync_ble.config_flow.is_switch", return_value=True),
     ):
         yield homes
 
@@ -116,13 +120,17 @@ def mock_no_usable_devices():
             "mac": "meshname1",
             "access_key": "meshpass1",
             "id": "home-1",
-            "devices": {1: {"name": "Motion Sensor", "type": 96, "mac": "AA:BB:CC:DD:EE:01"}},
+            "devices": {
+                1: {"name": "Motion Sensor", "type": 96, "mac": "AA:BB:CC:DD:EE:01"}
+            },
         }
     }
-    with patch(
-        "custom_components.cync_ble.config_flow.read_exported_homes",
-        new=AsyncMock(return_value=homes),
-    ), patch("custom_components.cync_ble.config_flow.is_light", return_value=False), patch(
-        "custom_components.cync_ble.config_flow.is_switch", return_value=False
+    with (
+        patch(
+            "custom_components.cync_ble.config_flow.read_exported_homes",
+            new=AsyncMock(return_value=homes),
+        ),
+        patch("custom_components.cync_ble.config_flow.is_light", return_value=False),
+        patch("custom_components.cync_ble.config_flow.is_switch", return_value=False),
     ):
         yield homes

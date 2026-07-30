@@ -119,7 +119,7 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     raise InvalidAuth
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:  # noqa: BLE001 - surfaced to the user as a form error
+            except Exception:
                 _LOGGER.exception("Unexpected error talking to the Cync cloud API")
                 errors["base"] = "cannot_connect"
             else:
@@ -141,8 +141,8 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     raise InvalidOtp
             except (InvalidOtp, ValueError):
                 errors["base"] = "invalid_otp"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error submitting OTP to the Cync cloud API")
+            except Exception:
+                _LOGGER.exception("Unexpected error submitting OTP to the Cync cloud API")  # noqa: E501
                 errors["base"] = "cannot_connect"
             else:
                 return await self._finish_export()

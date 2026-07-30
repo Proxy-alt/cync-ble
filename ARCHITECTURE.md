@@ -136,6 +136,33 @@ from a single capture and its presence rule contradicts acync's — see
 it. And `subscribe()` raises rather than returning quietly, because a refused
 subscribe leaves a dead session and a caller needs to know that.
 
+### The coordinator tries subscribing anyway — opportunistically, not by default belief
+
+`local_polling` describes the guaranteed baseline, not a claim that push is
+impossible. Static analysis of the real Cync iOS app's binary (`CbyGEKit.framework`,
+see `cync-lan-research`'s `ble_ios_app_subscribe_confirmed.md`) found it calls the
+same standards-compliant `setNotifyValue` against this same characteristic, and
+ships dedicated `subscribeRetryCounter`/`subscriptionRetryTimer` machinery
+specifically for it — strong evidence from the vendor's own first-party client
+that the call is merely *unreliable*, not refused for every caller under all
+conditions.
+
+So the coordinator does what the real app does: every fresh connection tries
+`subscribe()` once, rate-limited by `SUBSCRIBE_RETRY_INTERVAL_SECONDS` (30
+minutes). A refusal takes the whole connection down (confirmed on hardware,
+not a soft per-call failure), so failure means reconnecting again send-only
+before returning anything usable — and the backoff exists because retrying
+that on every reconnect would add connection churn across every device on the
+mesh, for a call with no confirmed case of ever succeeding against this
+project's own test hardware. If it ever does hold, that session's entities
+report genuinely pushed state instead of assumed state until the link drops.
+
+This is a real behavioural change from a pure "always assumed_state" design,
+worth being honest about: nobody has observed this subscribe succeed on a
+local BlueZ adapter, only on the vendor's own iOS stack. It may never fire in
+practice on this integration's supported platform. It costs nothing to try
+when the alternative — never trying — guarantees it never will.
+
 ## Protocol status
 
 Everything here is inherited from `cync-lan`, where the confidence markers live.

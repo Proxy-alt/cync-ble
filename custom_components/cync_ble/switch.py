@@ -38,10 +38,11 @@ async def async_setup_entry(
 class CyncBleSwitch(CyncBleEntity, SwitchEntity, RestoreEntity):
     """A plain on/off Cync Bluetooth switch or plug.
 
-    See entity.py: `assumed_state = True`, because nothing on this
-    transport can be read back. `_attr_is_on` is therefore restored from
-    this entity's own last known HA state on startup, then only ever
-    changed by a command this entity itself sends.
+    See entity.py: state is assumed unless a live subscription is actively
+    reporting this device, in which case `is_on` reports that instead.
+    `_attr_is_on` is the assumed fallback - restored from this entity's own
+    last known HA state on startup, then only ever changed by a command
+    this entity itself sends.
     """
 
     _attr_name = None
@@ -57,6 +58,17 @@ class CyncBleSwitch(CyncBleEntity, SwitchEntity, RestoreEntity):
         last_state = await self.async_get_last_state()
         if last_state is not None:
             self._attr_is_on = last_state.state == "on"
+
+    @property
+    def is_on(self) -> bool | None:
+        status = self._pushed_status
+        if status is not None:
+            # The mesh status report has no separate on/off field - a
+            # binary switch reporting through the same 0xDC slot format as
+            # dimmable devices reports its power state via brightness
+            # (0 = off), matching cync_lan's own TCP-side convention.
+            return status.brightness > 0
+        return self._attr_is_on
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_power(self.target, True)

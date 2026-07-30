@@ -12,9 +12,13 @@ integration.** No DNS redirection. No cloud in the loop at runtime.
 > coordinator, and switch/light platforms exist and pass their own test suite,
 > but nobody has installed this on a real Home Assistant yet. No colour
 > temperature or RGB control - not confirmed over this transport, see below.
-> No live state readback - every entity reports the last command it sent, not
-> anything confirmed by the device (see ARCHITECTURE.md's `local_polling`
-> section for why). Not yet submitted to HACS or `home-assistant/brands`.
+> No confirmed live state readback - every entity assumes the last command it
+> sent succeeded, not anything read back from the device (see ARCHITECTURE.md's
+> `local_polling` section for why). The coordinator does opportunistically try
+> the same subscribe the real apps use, on the chance it holds, but this has
+> never been observed to succeed on a local Bluetooth adapter - assume the
+> assumed-state behaviour is what you'll actually get. Not yet submitted to
+> HACS or `home-assistant/brands`.
 
 The sibling of [`cync-lan`](https://github.com/Proxy-alt/cync-lan), which
 controls the same devices over TCP by impersonating the vendor's cloud server.

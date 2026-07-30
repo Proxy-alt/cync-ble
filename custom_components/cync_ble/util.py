@@ -28,7 +28,9 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-async def configure_environment(hass: HomeAssistant, username: str, password: str) -> None:
+async def configure_environment(
+    hass: HomeAssistant, username: str, password: str
+) -> None:
     """Point cync_lan's env-var-driven config at this config flow.
 
     Must run before the first `import cync_lan.const` anywhere in the
@@ -50,7 +52,7 @@ async def configure_environment(hass: HomeAssistant, username: str, password: st
     os.environ.setdefault("CYNC_SECRET_KEY", await stable_secret(hass))
 
 
-def get_cloud_api(hass: HomeAssistant) -> "CyncCloudAPI":
+def get_cloud_api(hass: HomeAssistant) -> CyncCloudAPI:
     """Construct CyncCloudAPI with Home Assistant's shared aiohttp session
     instead of letting it open (and potentially leak) its own.
 

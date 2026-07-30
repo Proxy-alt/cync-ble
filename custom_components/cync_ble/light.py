@@ -41,9 +41,10 @@ class CyncBleLight(CyncBleEntity, LightEntity, RestoreEntity):
     """A Cync Bluetooth light - on/off, and brightness where the device
     supports dimming.
 
-    See entity.py: `assumed_state = True`. `_attr_is_on`/`_attr_brightness`
-    are restored from this entity's own last known HA state on startup,
-    then only ever changed by a command this entity itself sends.
+    See entity.py: state is assumed unless a live subscription is actively
+    reporting this device. `_attr_is_on`/`_attr_brightness` are the assumed
+    fallback - restored from this entity's own last known HA state on
+    startup, then only ever changed by a command this entity itself sends.
     """
 
     _attr_name = None
@@ -69,11 +70,27 @@ class CyncBleLight(CyncBleEntity, LightEntity, RestoreEntity):
             if isinstance(restored_brightness, (int, float)):
                 self._attr_brightness = int(restored_brightness)
 
+    @property
+    def is_on(self) -> bool | None:
+        status = self._pushed_status
+        if status is not None:
+            return status.brightness > 0
+        return self._attr_is_on
+
+    @property
+    def brightness(self) -> int | None:
+        status = self._pushed_status
+        if status is not None:
+            # Device's 0-100 percentage to HA's 0-255 scale.
+            return round(status.brightness / 100 * 255)
+        return self._attr_brightness
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_power(self.target, True)
         self._attr_is_on = True
         brightness = kwargs.get("brightness")
-        if brightness is not None and ColorMode.BRIGHTNESS in self.supported_color_modes:
+        dimmable = ColorMode.BRIGHTNESS in self.supported_color_modes
+        if brightness is not None and dimmable:
             # HA's 0-255 scale to the device's 0-100 percentage.
             device_brightness = round(brightness / 255 * 100)
             await self.coordinator.async_set_brightness(
