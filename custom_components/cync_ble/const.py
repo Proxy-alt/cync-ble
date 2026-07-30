@@ -48,6 +48,15 @@ DEFAULT_REFRESH_INTERVAL_SECONDS = 300
 # adding connection churn across every device on the mesh for no benefit.
 SUBSCRIBE_RETRY_INTERVAL_SECONDS = 1800
 
+# How many nodes to try connecting to before giving up for this cycle. Mesh
+# relay means any single one reaches everything, so walking the whole list
+# buys nothing and costs a great deal: on a real 46-node mesh an unbounded
+# walk held Home Assistant's startup for four and a half minutes and starved
+# a lock integration sharing the same adapter. Failing fast is better - the
+# coordinator retries on its own schedule, and at startup Home Assistant
+# retries a not-ready entry in the background rather than blocking on it.
+MAX_CONNECT_ATTEMPTS = 4
+
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.
 BROADCAST_ADDRESS = 0

@@ -5,10 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from cync_lan.ble_mesh import DeviceStatus
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import classify
+from .address import to_colon_form
 from .const import DOMAIN, MANUFACTURER
 from .coordinator import CyncBleCoordinator
 
@@ -40,7 +42,14 @@ class CyncBleEntity(CoordinatorEntity[CyncBleCoordinator]):
         connections = set()
         mac = device.get("mac")
         if mac:
-            connections.add(("bluetooth", mac.casefold()))
+            # A real, punctuated address - the cloud's bare hex was being
+            # registered verbatim, which matches nothing else in the device
+            # registry. Byte order is left as stored: unlike the connection
+            # path there is nothing to resolve it against here, and a device
+            # identity that flips depending on what the radio saw at setup
+            # time would be worse than one that is merely occasionally
+            # reversed.
+            connections.add((dr.CONNECTION_BLUETOOTH, to_colon_form(mac)))
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, unique_id)},
             connections=connections,

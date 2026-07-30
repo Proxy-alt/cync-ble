@@ -50,6 +50,7 @@ from .const import (
     CONF_MESH_PASSWORD,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
+    MAX_CONNECT_ATTEMPTS,
     SUBSCRIBE_RETRY_INTERVAL_SECONDS,
 )
 
@@ -221,24 +222,45 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     async def _async_ensure_connected(self) -> BleMeshSession:
         """Return a live, authenticated session, (re)connecting if needed.
 
-        Tries the last-known-good node first, then falls through the rest
-        of the mesh's own device list - any one of them reaches the whole
-        mesh once authenticated, so the first one Home Assistant can
-        currently see is as good as any other.
+        Tries the last-known-good node first, then other nodes Home
+        Assistant can currently see - any one of them reaches the whole
+        mesh once authenticated, so which one hardly matters.
+
+        Two deliberate bounds, both learned from a real install where this
+        blocked Home Assistant's startup for four and a half minutes and
+        starved a lock integration sharing the adapter:
+
+        - only nodes the Bluetooth stack can actually see are attempted.
+          Resolving is an in-memory lookup; connecting is not, and on a
+          46-node mesh most of the list is asleep or out of range at any
+          moment.
+        - at most `MAX_CONNECT_ATTEMPTS` connections per pass. Failing
+          quickly is better than eventually succeeding, because a failure
+          here is retried on the coordinator's own schedule (and, at
+          startup, as a normal `ConfigEntryNotReady` retry) instead of
+          holding a shared radio.
         """
         if self.session is not None and self.session.authenticated:
             return self.session
 
-        for mac in self._candidate_macs():
+        visible = [mac for mac in self._candidate_macs() if self._resolve(mac)]
+        for mac in visible[:MAX_CONNECT_ATTEMPTS]:
             session = await self._connect_to(mac)
             if session is not None:
                 self.session = session
                 return await self._maybe_try_subscribe(session)
 
+        if not visible:
+            raise UpdateFailed(
+                f"Could not reach any device on mesh {self.mesh_name!r} - none "
+                f"of its {len(self.devices)} known nodes are currently visible "
+                "to Home Assistant's Bluetooth stack"
+            )
         raise UpdateFailed(
-            f"Could not reach any device on mesh {self.mesh_name!r} - none of "
-            f"its {len(self.devices)} known nodes are currently visible to "
-            "Home Assistant's Bluetooth stack"
+            f"Could not connect to mesh {self.mesh_name!r} - {len(visible)} of "
+            f"its {len(self.devices)} nodes are visible but the first "
+            f"{min(len(visible), MAX_CONNECT_ATTEMPTS)} would not accept a "
+            "connection"
         )
 
     async def _async_update_data(self) -> dict[int, DeviceStatus]:
