@@ -24,6 +24,12 @@ refusal takes the whole connection down and retrying too eagerly would just
 add connection churn across the whole mesh). If it ever holds, this session
 switches from assumed to genuinely pushed state until the link drops.
 
+On the one real mesh tried so far it does not hold, and it fails in a way
+worth naming: `subscribe()` returned cleanly and the link died 2 seconds
+later. So "the call did not raise" proves nothing here, and the link has to
+outlive SUBSCRIBE_SETTLE_SECONDS before push is believed - see
+`_maybe_try_subscribe`.
+
 The BLE client is never constructed directly - always obtained through Home
 Assistant's own Bluetooth stack via `bleak_retry_connector`, which is what
 lets an ESPHome Bluetooth proxy stand in for a local adapter transparently.
@@ -54,6 +60,7 @@ from .const import (
     MAX_CONNECT_ATTEMPTS,
     REFRESH_TIMEOUT_SECONDS,
     SUBSCRIBE_RETRY_INTERVAL_SECONDS,
+    SUBSCRIBE_SETTLE_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -152,33 +159,55 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         `cync_lan.ble_mesh.BleMeshSession.subscribe`'s own docstring). So a
         failure here means reconnecting again, send-only, before returning
         anything usable to the caller.
+
+        **`subscribe()` returning is not success.** Observed on real
+        hardware: it returned cleanly, and the link dropped 2 seconds
+        later. Because only an explicit refusal was being backed off, every
+        reconnect subscribed again and killed the link again - a loop that
+        left entities flipping between pushed and assumed state, which is
+        what "the toggle snaps back" looked like from the outside. So the
+        link now has to still be up after `SUBSCRIBE_SETTLE_SECONDS` before
+        this claims push works, and a link that dies in that window is
+        treated exactly like a refusal.
         """
         if self.push_active or time.monotonic() < self._next_subscribe_attempt:
             return session
-        try:
-            await session.subscribe(self._on_mesh_status)
-        except BleMeshError as exc:
+
+        def _give_up(reason: str) -> None:
             _LOGGER.debug(
-                "%s: opportunistic subscribe was refused (%s); staying on "
-                "send-only polling, retrying in %ds",
+                "%s: opportunistic subscribe %s; staying on send-only "
+                "polling, retrying in %ds",
                 self.mesh_name,
-                exc,
+                reason,
                 SUBSCRIBE_RETRY_INTERVAL_SECONDS,
             )
             self._next_subscribe_attempt = (
                 time.monotonic() + SUBSCRIBE_RETRY_INTERVAL_SECONDS
             )
+            self.push_active = False
             self.session = None
             self._client = None
+
+        try:
+            await session.subscribe(self._on_mesh_status)
+        except BleMeshError as exc:
+            _give_up(f"was refused ({exc})")
             return await self._async_ensure_connected()
-        else:
-            self.push_active = True
-            _LOGGER.info(
-                "%s: mesh accepted a live status subscription - switching to "
-                "pushed state for this session",
-                self.mesh_name,
+
+        await asyncio.sleep(SUBSCRIBE_SETTLE_SECONDS)
+        if not session.authenticated:
+            _give_up(
+                f"was accepted but the link dropped within {SUBSCRIBE_SETTLE_SECONDS}s"
             )
-            return session
+            return await self._async_ensure_connected()
+
+        self.push_active = True
+        _LOGGER.info(
+            "%s: mesh accepted a live status subscription and the link "
+            "survived - using pushed state for this session",
+            self.mesh_name,
+        )
+        return session
 
     async def _connect_to(self, mac: str) -> BleMeshSession | None:
         resolved = self._resolve(mac)

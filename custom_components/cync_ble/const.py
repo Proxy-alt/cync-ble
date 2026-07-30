@@ -67,6 +67,13 @@ MAX_CONNECT_ATTEMPTS = 4
 # of waiting on it.
 REFRESH_TIMEOUT_SECONDS = 45
 
+# How long a freshly-subscribed link has to stay up before the subscription
+# counts as real. Confirmed on hardware: subscribe() returned cleanly and the
+# link dropped 2 seconds later, so "it did not raise" is not evidence of
+# anything. Long enough to catch that, short enough that a working mesh is
+# not made to wait for no reason.
+SUBSCRIBE_SETTLE_SECONDS = 6
+
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.
 BROADCAST_ADDRESS = 0
