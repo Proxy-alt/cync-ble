@@ -72,8 +72,12 @@ def badge(base: Image.Image, knockout: bool = True) -> Image.Image:
         # the mark rather than merging into the ray it covers.
         ring = Image.new("L", (work, work), 0)
         ImageDraw.Draw(ring).ellipse(
-            [cx - r - int(work * 0.035), cy - r - int(work * 0.035),
-             cx + r + int(work * 0.035), cy + r + int(work * 0.035)],
+            [
+                cx - r - int(work * 0.035),
+                cy - r - int(work * 0.035),
+                cx + r + int(work * 0.035),
+                cy + r + int(work * 0.035),
+            ],
             fill=255,
         )
         cleared = im.getchannel("A").point(lambda a: a)

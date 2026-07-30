@@ -142,7 +142,9 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except (InvalidOtp, ValueError):
                 errors["base"] = "invalid_otp"
             except Exception:
-                _LOGGER.exception("Unexpected error submitting OTP to the Cync cloud API")  # noqa: E501
+                _LOGGER.exception(
+                    "Unexpected error submitting OTP to the Cync cloud API"
+                )
                 errors["base"] = "cannot_connect"
             else:
                 return await self._finish_export()
