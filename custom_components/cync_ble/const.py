@@ -27,11 +27,17 @@ CONF_DEVICES = "devices"
 # on a radio Home Assistant shares with every other Bluetooth integration, so
 # this trades responsiveness against how much of that radio we occupy.
 #
-# Viable only because the sweep itself turned out to be near-instant - see
-# HARVEST_WINDOW_SECONDS. With the original 25s window a cycle took ~43s and
-# this could not have gone below several minutes without occupying the
-# adapter almost continuously.
-DEFAULT_REFRESH_INTERVAL_SECONDS = 45
+# Set by measurement, and by getting it wrong first. Shortening the harvest
+# window (see HARVEST_WINDOW_SECONDS) cut ~21s from every cycle and made 45s
+# look reachable - it is not. The sweep was never the expensive part:
+# *connecting* is, at roughly 20s per cycle, and that cost cannot be trimmed
+# the way the window could. At 45s every refresh hit its own ceiling and
+# failed, because a contended adapter makes establish_connection slower
+# exactly when it is being asked to work hardest.
+#
+# 120s keeps the radio free ~80% of the time while still being well over
+# twice as responsive as the 300s this started at.
+DEFAULT_REFRESH_INTERVAL_SECONDS = 120
 
 # Every refresh takes a "harvest": one deliberately sacrificial connection
 # that subscribes, collects the status sweep the mesh emits, and loses the
@@ -74,8 +80,10 @@ MAX_CONNECT_ATTEMPTS = 4
 #
 # Deliberately below DEFAULT_REFRESH_INTERVAL_SECONDS: a refresh that outlives
 # its own interval would have the next one queued behind it permanently, and
-# the adapter would never be handed back.
-REFRESH_TIMEOUT_SECONDS = 35
+# the adapter would never be handed back. Also comfortably above a healthy
+# cycle (~20s, nearly all of it connecting) - set too close to that, as it
+# briefly was, and normal connection variance reads as failure.
+REFRESH_TIMEOUT_SECONDS = 75
 
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.
