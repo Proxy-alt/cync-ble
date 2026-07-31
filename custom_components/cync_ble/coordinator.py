@@ -85,15 +85,17 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
         self._client: BleakClientWithServiceCache | None = None
         self.session: BleMeshSession | None = None
-        # Tried first on every (re)connect, since it's the anchor most
-        # recently known to work - avoids scanning all ~40 mesh nodes on
-        # every reconnect when the same one keeps working fine.
-        self._last_good_mac: str | None = None
         # Nodes that refused a connection recently, by mac. A node that just
         # failed is the worst thing to try next: the adapter has a small,
         # shared pool of connection slots, and the common failure here is
         # "out of connection slots" rather than anything about the node.
         self._recent_failures: dict[str, float] = {}
+        # Nodes that have completed a mesh handshake at least once. Worth
+        # remembering separately from "did not fail recently": on this mesh
+        # most nodes never accept a connection at all, so having proven one
+        # is a much stronger signal than not having tried it.
+        self._known_good: set[str] = set()
+        self._last_used: dict[str, float] = {}
 
         # What the mesh last told us about itself, by device id. Populated by
         # _async_harvest and deliberately kept across reconnects: a stale
@@ -113,26 +115,39 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     def _candidate_macs(self) -> list[str]:
         """Nodes to try, best first.
 
-        Last-known-good leads, then anything that has not failed recently,
-        then the recent failures last. Any single node reaches the whole mesh,
-        so the only thing that matters is finding one that answers quickly.
+        Ordering matters far more here than it looks. The stored device list
+        arrives in the cloud's own order, which on a real account is dominated
+        by one hardware family (`F4:BC:DA`) whose members consistently refuse
+        connections with "the adapter is out of connection slots", while the
+        handful of nodes that reliably answer sit near the end. Walking the
+        list in order meant grinding through refusals six at a time and
+        reaching a working node only by luck - three failed cycles before the
+        first success, and a repeat of that grind whenever the good node was
+        briefly unavailable.
+
+        So proven nodes lead, **least recently used first**. That rotation is
+        deliberate: the harvest ends by having its link killed, and the node
+        that just happened to is the least likely to accept another connection
+        immediately. Rotating only among nodes already known to work is what
+        makes this safe - an earlier attempt that rotated across the whole
+        list simply spread the failures around and exhausted the adapter.
         """
         now = time.monotonic()
-        fresh, stale = [], []
+        known_good, untried, cooling = [], [], []
         for device in self.devices:
             mac = device.get("mac")
             if not mac:
                 continue
+            if mac in self._known_good:
+                known_good.append(mac)
+                continue
             failed_at = self._recent_failures.get(mac)
             if failed_at is not None and now - failed_at < FAILURE_COOLDOWN_SECONDS:
-                stale.append(mac)
+                cooling.append(mac)
             else:
-                fresh.append(mac)
-        macs = fresh + stale
-        if self._last_good_mac and self._last_good_mac in macs:
-            macs.remove(self._last_good_mac)
-            macs.insert(0, self._last_good_mac)
-        return macs
+                untried.append(mac)
+        known_good.sort(key=lambda mac: self._last_used.get(mac, 0.0))
+        return known_good + untried + cooling
 
     def _resolve(self, mac: str) -> tuple[Any, str] | None:
         """Find the real Bluetooth address behind one stored MAC.
@@ -195,10 +210,16 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         """
         await self._async_close_link()
 
+        candidates = [m for m in self._candidate_macs() if self._resolve(m)]
+        _LOGGER.debug(
+            "%s: %d node(s) visible, %d proven; trying up to %d",
+            self.mesh_name,
+            len(candidates),
+            len(self._known_good),
+            MAX_CONNECT_ATTEMPTS,
+        )
         session = None
-        for mac in [m for m in self._candidate_macs() if self._resolve(m)][
-            :MAX_CONNECT_ATTEMPTS
-        ]:
+        for mac in candidates[:MAX_CONNECT_ATTEMPTS]:
             session = await self._connect_to(mac)
             if session is not None:
                 break
@@ -290,6 +311,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 )
         except Exception as exc:
             self._recent_failures[mac] = time.monotonic()
+            self._last_used[mac] = time.monotonic()
             _LOGGER.debug("%s: could not connect to %s: %s", self.mesh_name, addr, exc)
             return None
 
@@ -315,7 +337,9 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return None
 
         self._client = client
-        self._last_good_mac = mac
+        self._known_good.add(mac)
+        self._last_used[mac] = time.monotonic()
+        self._recent_failures.pop(mac, None)
         return session
 
     async def _async_ensure_connected(self) -> BleMeshSession:
