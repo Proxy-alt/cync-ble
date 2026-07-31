@@ -57,7 +57,6 @@ from .const import (
     CONNECT_TIMEOUT_SECONDS,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
-    FAILURE_COOLDOWN_SECONDS,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
     REFRESH_TIMEOUT_SECONDS,
@@ -132,22 +131,32 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         makes this safe - an earlier attempt that rotated across the whole
         list simply spread the failures around and exhausted the adapter.
         """
-        now = time.monotonic()
-        known_good, untried, cooling = [], [], []
+        known_good, untried, failed = [], [], []
         for device in self.devices:
             mac = device.get("mac")
             if not mac:
                 continue
             if mac in self._known_good:
                 known_good.append(mac)
-                continue
-            failed_at = self._recent_failures.get(mac)
-            if failed_at is not None and now - failed_at < FAILURE_COOLDOWN_SECONDS:
-                cooling.append(mac)
+            elif mac in self._recent_failures:
+                failed.append(mac)
             else:
                 untried.append(mac)
+        # Proven nodes rotate least-recently-used first; never-tried nodes
+        # come before anything already known to refuse; and refusals are
+        # retried oldest-first.
+        #
+        # Ordering by age rather than expiring a cooldown is deliberate, and
+        # replaces a version that got this wrong: with 44 visible nodes tried
+        # six at a time, a full sweep of the list takes several minutes, and a
+        # five-minute cooldown expired before the walk ever reached the tail.
+        # It re-tried the same refusing head of the list indefinitely and
+        # never discovered the nodes that answer, which sit at the end of the
+        # cloud's ordering. Sorting by age cannot do that: everything gets its
+        # turn before anything gets a second one.
         known_good.sort(key=lambda mac: self._last_used.get(mac, 0.0))
-        return known_good + untried + cooling
+        failed.sort(key=lambda mac: self._recent_failures.get(mac, 0.0))
+        return known_good + untried + failed
 
     def _resolve(self, mac: str) -> tuple[Any, str] | None:
         """Find the real Bluetooth address behind one stored MAC.

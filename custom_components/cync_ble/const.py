@@ -38,10 +38,11 @@ CONF_DEVICES = "devices"
 # each one nine times. Two nodes consumed the entire budget every cycle while
 # forty others advertised untouched, one second old.
 #
-# That is fixed at the source - one attempt per node, failures sent to the
-# back of the queue (see MAX_CONNECT_ATTEMPTS) - so this interval is no longer
-# doing the work of hiding it. Kept at 120s until a fast interval has been
-# observed healthy for a sustained period rather than assumed to follow.
+# That is fixed at the source - one bounded attempt per node, and a candidate
+# order that walks every node before repeating any (see _candidate_macs) - so
+# this interval is no longer doing the work of hiding it. Kept at 120s until a
+# fast interval has been observed healthy for a sustained period rather than
+# assumed to follow.
 DEFAULT_REFRESH_INTERVAL_SECONDS = 120
 
 # Every refresh takes a "harvest": one deliberately sacrificial connection
@@ -75,21 +76,19 @@ HARVEST_WINDOW_SECONDS = 4
 # Each is now a single connection attempt rather than bleak's default
 # nine-try ladder, so trying more nodes is cheaper than trying one node
 # harder - which is the right shape when any node reaches the whole mesh.
-MAX_CONNECT_ATTEMPTS = 6
+MAX_CONNECT_ATTEMPTS = 10
 
 # Hard ceiling on one node's connection attempt. bleak_retry_connector's own
 # max_attempts was observed being ignored - failures still reported "after 9
 # attempt(s)" and still cost ~40s with it set to 1 - so this is enforced here
 # instead. Two dead nodes at 40s each were consuming an entire refresh budget
-# while forty live ones waited; at this bound the same cycle reaches all of
-# them.
-CONNECT_TIMEOUT_SECONDS = 9
-
-# How long a node that refused a connection is sent to the back of the queue.
-# The usual failure is "the adapter is out of connection slots", which says
-# nothing about that node in particular - so this is short. It exists only to
-# stop a cycle re-trying whatever just failed while 40 other nodes wait.
-FAILURE_COOLDOWN_SECONDS = 300
+# while forty live ones waited.
+#
+# Short because a node that is going to answer answers quickly - the probe
+# connects to a healthy node near-instantly. The cost of being wrong here is
+# only that a slow-but-viable node gets skipped this cycle and tried again
+# next; the cost of being generous is not reaching the nodes that work.
+CONNECT_TIMEOUT_SECONDS = 5
 
 # Hard ceiling on one refresh, harvest included. Capping the number of
 # attempts was not enough on real hardware - bleak_retry_connector runs its
