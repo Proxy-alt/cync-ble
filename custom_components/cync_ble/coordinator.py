@@ -56,6 +56,7 @@ from .const import (
     CONF_MESH_PASSWORD,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
+    FAILURE_COOLDOWN_SECONDS,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
     REFRESH_TIMEOUT_SECONDS,
@@ -87,6 +88,11 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # recently known to work - avoids scanning all ~40 mesh nodes on
         # every reconnect when the same one keeps working fine.
         self._last_good_mac: str | None = None
+        # Nodes that refused a connection recently, by mac. A node that just
+        # failed is the worst thing to try next: the adapter has a small,
+        # shared pool of connection slots, and the common failure here is
+        # "out of connection slots" rather than anything about the node.
+        self._recent_failures: dict[str, float] = {}
 
         # What the mesh last told us about itself, by device id. Populated by
         # _async_harvest and deliberately kept across reconnects: a stale
@@ -104,7 +110,24 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         return self.session is not None and self.session.authenticated
 
     def _candidate_macs(self) -> list[str]:
-        macs = [d["mac"] for d in self.devices if d.get("mac")]
+        """Nodes to try, best first.
+
+        Last-known-good leads, then anything that has not failed recently,
+        then the recent failures last. Any single node reaches the whole mesh,
+        so the only thing that matters is finding one that answers quickly.
+        """
+        now = time.monotonic()
+        fresh, stale = [], []
+        for device in self.devices:
+            mac = device.get("mac")
+            if not mac:
+                continue
+            failed_at = self._recent_failures.get(mac)
+            if failed_at is not None and now - failed_at < FAILURE_COOLDOWN_SECONDS:
+                stale.append(mac)
+            else:
+                fresh.append(mac)
+        macs = fresh + stale
         if self._last_good_mac and self._last_good_mac in macs:
             macs.remove(self._last_good_mac)
             macs.insert(0, self._last_good_mac)
@@ -255,8 +278,18 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 ble_device,
                 f"{DOMAIN}-{addr}",
                 disconnected_callback=self._on_disconnect,
+                # One shot per node, deliberately. The default ladder retries
+                # a single address up to nine times over ~36 seconds, which is
+                # exactly the wrong shape here: mesh relay means any node
+                # reaches the whole mesh, so nine tries at one node is far
+                # worse than one try at nine nodes. Observed on hardware -
+                # two unreachable nodes at the head of the list consumed the
+                # entire refresh budget every cycle for two hours while 40
+                # other nodes sat there advertising.
+                max_attempts=1,
             )
         except Exception as exc:
+            self._recent_failures[mac] = time.monotonic()
             _LOGGER.debug("%s: could not connect to %s: %s", self.mesh_name, addr, exc)
             return None
 

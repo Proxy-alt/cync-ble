@@ -27,27 +27,21 @@ CONF_DEVICES = "devices"
 # on a radio Home Assistant shares with every other Bluetooth integration, so
 # this trades responsiveness against how much of that radio we occupy.
 #
-# Set by measurement, and by getting it wrong twice.
+# Set by measurement, and by getting the diagnosis wrong before getting it
+# right.
 #
-# Shortening the harvest window (see HARVEST_WINDOW_SECONDS) cut ~21s from
-# every cycle and made 45s look reachable. At 45s every refresh instead hit
-# its own ceiling and failed - not slowly degrading, but 100% failure once it
-# started, with no progress logged at all before the timeout.
+# At 45s every refresh failed, 100% of them, for two hours. The explanation
+# recorded here at the time - that reconnect churn wedges the stack - was
+# wrong. The logs said plainly what was happening: two specific nodes sat at
+# the head of the candidate list, both answered "the adapter is out of
+# connection slots", and bleak's default ladder spent ~36 seconds retrying
+# each one nine times. Two nodes consumed the entire budget every cycle while
+# forty others advertised untouched, one second old.
 #
-# The tempting explanation, that connecting simply costs too much, is wrong: a
-# healthy cycle here takes **8-10 seconds**, nearly all of it connecting, so
-# 45s should have been ~20% duty. What actually happens is that reconnecting
-# to the same node that often produces churn the stack does not recover from -
-# a failed refresh appears to leave state behind that makes the next connect
-# fail too, so it compounds instead of degrading gently. Whether that is
-# BlueZ's teardown lagging or the device's own connection handling is **not
-# established**, so this is set from what was observed to work rather than
-# from a mechanism that is understood.
-#
-# 120s runs cleanly, leaves the radio free ~90% of the time, and is still
-# well over twice as responsive as the 300s this started at. Going faster is
-# plausibly possible with more careful teardown between cycles; it is not a
-# matter of simply lowering this number.
+# That is fixed at the source - one attempt per node, failures sent to the
+# back of the queue (see MAX_CONNECT_ATTEMPTS) - so this interval is no longer
+# doing the work of hiding it. Kept at 120s until a fast interval has been
+# observed healthy for a sustained period rather than assumed to follow.
 DEFAULT_REFRESH_INTERVAL_SECONDS = 120
 
 # Every refresh takes a "harvest": one deliberately sacrificial connection
@@ -78,11 +72,16 @@ DEFAULT_REFRESH_INTERVAL_SECONDS = 120
 HARVEST_WINDOW_SECONDS = 4
 
 # How many nodes to try before giving up on reaching the mesh this cycle.
-# Mesh relay means any single one reaches everything, so walking the whole
-# list buys nothing and costs a lot: on a real 46-node mesh an unbounded walk
-# held Home Assistant's startup for four and a half minutes and starved a
-# lock integration sharing the adapter.
-MAX_CONNECT_ATTEMPTS = 4
+# Each is now a single connection attempt rather than bleak's default
+# nine-try ladder, so trying more nodes is cheaper than trying one node
+# harder - which is the right shape when any node reaches the whole mesh.
+MAX_CONNECT_ATTEMPTS = 8
+
+# How long a node that refused a connection is sent to the back of the queue.
+# The usual failure is "the adapter is out of connection slots", which says
+# nothing about that node in particular - so this is short. It exists only to
+# stop a cycle re-trying whatever just failed while 40 other nodes wait.
+FAILURE_COOLDOWN_SECONDS = 300
 
 # Hard ceiling on one refresh, harvest included. Capping the number of
 # attempts was not enough on real hardware - bleak_retry_connector runs its
@@ -92,8 +91,8 @@ MAX_CONNECT_ATTEMPTS = 4
 # Deliberately below DEFAULT_REFRESH_INTERVAL_SECONDS: a refresh that outlives
 # its own interval would have the next one queued behind it permanently, and
 # the adapter would never be handed back. Also comfortably above a healthy
-# cycle (~20s, nearly all of it connecting) - set too close to that, as it
-# briefly was, and normal connection variance reads as failure.
+# cycle - set too close, as it briefly was at 35s, and normal connection
+# variance reads as failure.
 REFRESH_TIMEOUT_SECONDS = 75
 
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
