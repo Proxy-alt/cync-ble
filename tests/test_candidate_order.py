@@ -78,11 +78,37 @@ async def test_proven_nodes_rotate_least_recently_used_first(hass):
 
 async def test_a_proven_node_stays_proven_after_one_refusal(hass):
     """ "Out of connection slots" is usually about the adapter, not the node.
-    A single refusal must not discard hard-won knowledge - it only rotates
-    that node to the back of the proven set."""
+    A single refusal must not discard hard-won knowledge - the node stays in
+    the proven set and still outranks known refusals."""
     coordinator = _coordinator(hass)
     coordinator._known_good.add(ANSWERS)
     coordinator._recent_failures[ANSWERS] = 1_000_000.0
-    coordinator._last_used[ANSWERS] = 1_000_000.0
     assert ANSWERS in coordinator._known_good
-    assert coordinator._candidate_macs()[0] == ANSWERS
+    order = coordinator._candidate_macs()
+    assert order.index(ANSWERS) < order.index(REFUSING[0])
+
+
+async def test_a_node_rests_after_serving_a_harvest(hass):
+    """The harvest ends by killing its own link, and that node then refuses
+    the next connection. Resting it is what pushes the walk into never-tried
+    nodes, which is the only way a second proven node is ever found."""
+    import time as _time
+
+    coordinator = _coordinator(hass)
+    coordinator._known_good.add(ANSWERS)
+    coordinator._last_used[ANSWERS] = _time.monotonic()  # just used
+    order = coordinator._candidate_macs()
+    assert order[0] != ANSWERS
+    assert order[0] in REFUSING  # an untried node gets the turn instead
+
+
+async def test_a_rested_node_still_beats_known_refusals(hass):
+    """Resting demotes a proven node below untried ones, not below nodes
+    already known to refuse - it is still the best thing we know."""
+    coordinator = _coordinator(hass, [*REFUSING, ANSWERS])
+    coordinator._known_good.add(ANSWERS)
+    coordinator._last_used[ANSWERS] = __import__("time").monotonic()
+    for mac in REFUSING:
+        coordinator._recent_failures[mac] = 1.0
+    order = coordinator._candidate_macs()
+    assert order[0] == ANSWERS

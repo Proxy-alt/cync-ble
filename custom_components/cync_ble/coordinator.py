@@ -59,6 +59,7 @@ from .const import (
     HARVEST_DEADLINE_SECONDS,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
+    NODE_REST_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -130,32 +131,33 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         makes this safe - an earlier attempt that rotated across the whole
         list simply spread the failures around and exhausted the adapter.
         """
-        known_good, untried, failed = [], [], []
+        now = time.monotonic()
+        known_good, resting, untried, failed = [], [], [], []
         for device in self.devices:
             mac = device.get("mac")
             if not mac:
                 continue
+            used_at = self._last_used.get(mac, 0.0)
             if mac in self._known_good:
-                known_good.append(mac)
+                # A node that served the last harvest had its link killed by
+                # it, and reliably refuses the next one - observed as a steady
+                # 72s cycle where the single proven node failed first every
+                # time. Rest it, and let the walk find a second proven node so
+                # there is something to rotate between.
+                if now - used_at < NODE_REST_SECONDS:
+                    resting.append(mac)
+                else:
+                    known_good.append(mac)
             elif mac in self._recent_failures:
                 failed.append(mac)
             else:
                 untried.append(mac)
-        # Proven nodes rotate least-recently-used first; never-tried nodes
-        # come before anything already known to refuse; and refusals are
-        # retried oldest-first.
-        #
-        # Ordering by age rather than expiring a cooldown is deliberate, and
-        # replaces a version that got this wrong: with 44 visible nodes tried
-        # six at a time, a full sweep of the list takes several minutes, and a
-        # five-minute cooldown expired before the walk ever reached the tail.
-        # It re-tried the same refusing head of the list indefinitely and
-        # never discovered the nodes that answer, which sit at the end of the
-        # cloud's ordering. Sorting by age cannot do that: everything gets its
-        # turn before anything gets a second one.
+        # Proven and rested first, then nodes never tried (which is how a
+        # second proven node gets discovered), then rested-but-proven, then
+        # known refusals oldest-first.
         known_good.sort(key=lambda mac: self._last_used.get(mac, 0.0))
         failed.sort(key=lambda mac: self._recent_failures.get(mac, 0.0))
-        return known_good + untried + failed
+        return known_good + untried + resting + failed
 
     def _resolve(self, mac: str) -> tuple[Any, str] | None:
         """Find the real Bluetooth address behind one stored MAC.

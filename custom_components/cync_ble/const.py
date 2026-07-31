@@ -94,6 +94,14 @@ MAX_CONNECT_ATTEMPTS = 3
 # ones when it is out of time, and picks up where it left off next refresh.
 HARVEST_DEADLINE_SECONDS = 45
 
+# How long a node rests after serving a harvest before it is preferred again.
+# The harvest ends by having its link killed, and that node then refuses the
+# next connection - with only one proven node this showed up as a rock-steady
+# 72s cycle, every one succeeding but only after the proven node failed first.
+# Resting it pushes the walk into never-tried nodes, which is how a second
+# proven node gets found and real rotation becomes possible.
+NODE_REST_SECONDS = 150
+
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.
 BROADCAST_ADDRESS = 0
