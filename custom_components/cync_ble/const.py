@@ -76,19 +76,8 @@ HARVEST_WINDOW_SECONDS = 4
 # Each is now a single connection attempt rather than bleak's default
 # nine-try ladder, so trying more nodes is cheaper than trying one node
 # harder - which is the right shape when any node reaches the whole mesh.
-MAX_CONNECT_ATTEMPTS = 10
+MAX_CONNECT_ATTEMPTS = 3
 
-# Hard ceiling on one node's connection attempt. bleak_retry_connector's own
-# max_attempts was observed being ignored - failures still reported "after 9
-# attempt(s)" and still cost ~40s with it set to 1 - so this is enforced here
-# instead. Two dead nodes at 40s each were consuming an entire refresh budget
-# while forty live ones waited.
-#
-# Short because a node that is going to answer answers quickly - the probe
-# connects to a healthy node near-instantly. The cost of being wrong here is
-# only that a slow-but-viable node gets skipped this cycle and tried again
-# next; the cost of being generous is not reaching the nodes that work.
-CONNECT_TIMEOUT_SECONDS = 5
 
 # Hard ceiling on one refresh, harvest included. Capping the number of
 # attempts was not enough on real hardware - bleak_retry_connector runs its

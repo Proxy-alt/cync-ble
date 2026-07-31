@@ -54,7 +54,6 @@ from .const import (
     CONF_DEVICES,
     CONF_MESH_NAME,
     CONF_MESH_PASSWORD,
-    CONNECT_TIMEOUT_SECONDS,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
     HARVEST_WINDOW_SECONDS,
@@ -304,20 +303,28 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return None
         ble_device, addr = resolved
         try:
-            # Bounded here rather than via establish_connection's own
-            # max_attempts, which was observed being ignored: the failure
-            # still reported "after 9 attempt(s)" and still cost ~40s per
-            # node with max_attempts=1 set. An explicit timeout is the only
-            # thing that reliably makes one node cheap, which is what lets a
-            # cycle walk past a dead node and reach a live one.
-            async with asyncio.timeout(CONNECT_TIMEOUT_SECONDS):
-                client = await establish_connection(
-                    BleakClientWithServiceCache,
-                    ble_device,
-                    f"{DOMAIN}-{addr}",
-                    disconnected_callback=self._on_disconnect,
-                    max_attempts=1,
-                )
+            # NOT wrapped in a cancelling timeout, however tempting.
+            #
+            # A cancelled establish_connection does not release the
+            # connection slot it reserved from Home Assistant's Bluetooth
+            # manager. Ten cancelled attempts in one cycle exhausted the pool
+            # outright: BlueZ showed zero open connections while every
+            # subsequent attempt was refused with "the adapter is out of
+            # connection slots", and a raw BleakClient - which bypasses that
+            # accounting - connected to the same mesh instantly throughout.
+            # It never recovered on its own, and survived restarts because
+            # the first cycle after boot re-leaked the pool immediately.
+            #
+            # So each attempt is allowed to finish. max_attempts keeps it to
+            # one connection try; the slow part when no slot is free is the
+            # waiting, and cancelling that wait is precisely what breaks it.
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                ble_device,
+                f"{DOMAIN}-{addr}",
+                disconnected_callback=self._on_disconnect,
+                max_attempts=1,
+            )
         except Exception as exc:
             self._recent_failures[mac] = time.monotonic()
             self._last_used[mac] = time.monotonic()
