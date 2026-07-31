@@ -57,6 +57,8 @@ from .const import (
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
     HARVEST_DEADLINE_SECONDS,
+    HARVEST_FAILURE_LIMIT,
+    HARVEST_RETRY_AFTER_SECONDS,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
     NODE_REST_SECONDS,
@@ -102,6 +104,11 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # blanking every time the link cycles.
         self.device_states: dict[int, DeviceStatus] = {}
         self._last_harvest: float = 0.0
+        # Consecutive failed harvests, and when to try again after giving up.
+        # See HARVEST_FAILURE_LIMIT: falling back to command-only is a
+        # deliberate, reversible degradation, not an error state.
+        self._harvest_failures: int = 0
+        self._harvest_paused_until: float = 0.0
         # Commands write their intent here so an entity does not visibly snap
         # back to the pre-command value while waiting for the next harvest.
         # Cleared per device once a harvest newer than the command lands.
@@ -421,25 +428,55 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             "connection"
         )
 
+    @property
+    def state_polling_active(self) -> bool:
+        """Whether we are still trying to read state from the mesh."""
+        return time.monotonic() >= self._harvest_paused_until
+
     async def _async_update_data(self) -> dict[int, DeviceStatus]:
-        """Harvest the mesh's state - see the module docstring.
+        """Harvest the mesh's state, or stay out of the way if that has
+        proven not to work here.
 
-        Raising UpdateFailed is what makes `last_update_success` (and so
-        every entity's availability) reflect real mesh reachability.
-
-        Bounded, because this also runs during setup: see
-        REFRESH_TIMEOUT_SECONDS.
+        Deliberately does NOT raise when harvesting is paused. A paused
+        integration is still fully usable - commands connect on demand and
+        work - so failing the refresh would mark every entity unavailable
+        for a capability they never lose.
         """
-        # No asyncio.timeout here either, for the same reason: it would cancel
-        # whatever connection was in flight and leak its slot. _async_harvest
-        # bounds itself by deadline instead, so this cannot run away.
+        if not self.state_polling_active:
+            return self.device_states
+
         await self._async_harvest()
 
-        if not self.device_states:
+        if self.device_states:
+            if self._harvest_failures:
+                _LOGGER.info(
+                    "%s: state polling recovered after %d failed attempt(s)",
+                    self.mesh_name,
+                    self._harvest_failures,
+                )
+            self._harvest_failures = 0
+            return self.device_states
+
+        self._harvest_failures += 1
+        if self._harvest_failures < HARVEST_FAILURE_LIMIT:
             raise UpdateFailed(
                 f"Mesh {self.mesh_name!r} reported nothing - none of its "
                 f"{len(self.devices)} nodes could be reached"
             )
+
+        # Give up on state, keep the integration working.
+        self._harvest_paused_until = time.monotonic() + HARVEST_RETRY_AFTER_SECONDS
+        _LOGGER.warning(
+            "%s: could not read state from the mesh %d times in a row, so "
+            "state polling is pausing for %d minutes. Switches and lights keep "
+            "working - they will report the last state commanded rather than "
+            "the mesh's own. This usually means the Bluetooth adapter cannot "
+            "sustain connections to the mesh; an ESPHome Bluetooth proxy is "
+            "the usual fix.",
+            self.mesh_name,
+            self._harvest_failures,
+            HARVEST_RETRY_AFTER_SECONDS // 60,
+        )
         return self.device_states
 
     def _record_optimistic(self, target: int, brightness: int) -> None:

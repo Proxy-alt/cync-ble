@@ -17,7 +17,15 @@ type CyncBleConfigEntry = ConfigEntry[CyncBleCoordinator]
 
 async def async_setup_entry(hass: HomeAssistant, entry: CyncBleConfigEntry) -> bool:
     coordinator = CyncBleCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
+    # Deliberately async_refresh, not async_config_entry_first_refresh.
+    #
+    # The device list comes from the config entry, not from the mesh, so
+    # entities are useful whether or not state can be read - commands connect
+    # on demand and work regardless. Failing setup because the first harvest
+    # did not land would leave a working integration with no entities at all,
+    # which is strictly worse than entities that report the last state
+    # commanded. See the coordinator's fallback handling.
+    await coordinator.async_refresh()
     entry.runtime_data = coordinator
 
     # The mesh itself, as a device every light and switch hangs off. Every

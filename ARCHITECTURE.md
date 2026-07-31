@@ -209,6 +209,38 @@ command issued since the last harvest wins, and the mesh's own account takes
 over once a harvest lands after it. Without that rule every toggle visibly
 snaps back.
 
+### State polling is optional, and falls back rather than failing
+
+Reading state costs a connection on a radio Home Assistant shares with every
+other Bluetooth integration, and on real hardware that turned out to be the
+weak point — not the protocol. On a Raspberry Pi's built-in Broadcom adapter,
+shared with a lock and an iBeacon integration, harvesting oscillated between
+working perfectly (7–11s cycles, 38 devices) and failing every single cycle
+for hours, while a raw `BleakClient` on the same box collected 38/38 devices
+throughout.
+
+So harvesting gives up rather than grinding. After a few consecutive failures
+state polling pauses for an hour, and the integration reverts to what it did
+before harvesting existed: commands connect on demand, entities report the
+last state commanded (`assumed_state`), and the radio is untouched between
+user actions. That is a real loss — a physically-operated switch stops being
+noticed — but holding a shared adapter for over a minute at a time to keep
+failing at it is worse, and starves whatever else needs that radio.
+
+Two consequences worth stating plainly:
+
+- **Setup does not depend on state readback.** The device list comes from the
+  config entry, so entities are created whether or not the mesh can be read.
+  Failing setup over a missed harvest would leave a working integration with
+  no entities at all.
+- **A paused refresh reports success.** Entities stay available, because a
+  paused integration still commands devices perfectly well; marking them
+  unavailable would advertise the loss of a capability they never lost.
+
+The pause is not permanent, because conditions genuinely can improve — an
+ESPHome proxy appearing is the obvious case, since it brings its own GATT
+client and its own uncontended connection slots.
+
 ## Protocol status
 
 Everything here is inherited from `cync-lan`, where the confidence markers live.

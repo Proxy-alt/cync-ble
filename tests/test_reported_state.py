@@ -8,7 +8,11 @@ wins" would make every toggle visibly snap back.
 
 from __future__ import annotations
 
+import time
+
+import pytest
 from cync_lan.ble_mesh import DeviceStatus
+from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.cync_ble.const import (
@@ -101,3 +105,41 @@ async def test_assumed_state_only_until_the_mesh_reports(hass):
     assert coordinator.device_states.get(TARGET) is None
     _harvested(coordinator, 60, at=100.0)
     assert coordinator.device_states.get(TARGET) is not None
+
+
+async def test_state_polling_pauses_after_repeated_failure(hass):
+    """Falling back to command-only is a deliberate degradation. It must not
+    mark the refresh failed - a paused integration still commands devices
+    fine, and failing would make every entity unavailable for a capability it
+    never lost."""
+    from custom_components.cync_ble.const import HARVEST_FAILURE_LIMIT
+
+    coordinator = _coordinator(hass)
+
+    async def _harvest_nothing() -> None:
+        return None
+
+    coordinator._async_harvest = _harvest_nothing
+
+    for _ in range(HARVEST_FAILURE_LIMIT - 1):
+        with pytest.raises(UpdateFailed):
+            await coordinator._async_update_data()
+
+    # The one that trips the limit reports success rather than failure.
+    assert await coordinator._async_update_data() == {}
+    assert coordinator.state_polling_active is False
+
+
+async def test_a_paused_integration_stops_touching_the_radio(hass):
+    """The whole point of the fallback: no periodic connection attempts."""
+    coordinator = _coordinator(hass)
+    coordinator._harvest_paused_until = time.monotonic() + 3600
+    called = False
+
+    async def _should_not_run() -> None:
+        nonlocal called
+        called = True
+
+    coordinator._async_harvest = _should_not_run
+    await coordinator._async_update_data()
+    assert called is False

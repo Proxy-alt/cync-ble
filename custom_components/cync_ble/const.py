@@ -102,6 +102,28 @@ HARVEST_DEADLINE_SECONDS = 45
 # proven node gets found and real rotation becomes possible.
 NODE_REST_SECONDS = 150
 
+# Consecutive failed harvests before state polling gives up and the
+# integration falls back to command-only.
+#
+# The fallback is not a degraded mode invented for the occasion - it is what
+# this integration did before harvesting existed, and it worked: commands
+# connect on demand, entities report what they last sent (`assumed_state`),
+# and the radio is untouched between user actions. Losing state readback is a
+# real loss; holding a shared adapter for ~72s every couple of minutes to keep
+# failing at it is worse, and starves whatever else needs that radio.
+#
+# Confirmed necessary on real hardware: on a Pi's built-in Broadcom adapter
+# shared with a lock and an iBeacon integration, harvesting oscillated between
+# working perfectly and failing every single cycle for hours.
+HARVEST_FAILURE_LIMIT = 3
+
+# How long before a fallen-back integration tries harvesting again. Conditions
+# genuinely can improve - an ESPHome proxy appearing is the obvious case, since
+# it brings its own GATT client and its own uncontended connection slots - so
+# this is not permanent. Long enough that a mesh which cannot support it is not
+# repeatedly disturbed.
+HARVEST_RETRY_AFTER_SECONDS = 3600
+
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.
 BROADCAST_ADDRESS = 0
