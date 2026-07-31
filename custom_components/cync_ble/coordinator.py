@@ -54,6 +54,7 @@ from .const import (
     CONF_DEVICES,
     CONF_MESH_NAME,
     CONF_MESH_PASSWORD,
+    CONNECT_TIMEOUT_SECONDS,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
     FAILURE_COOLDOWN_SECONDS,
@@ -273,21 +274,20 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return None
         ble_device, addr = resolved
         try:
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                ble_device,
-                f"{DOMAIN}-{addr}",
-                disconnected_callback=self._on_disconnect,
-                # One shot per node, deliberately. The default ladder retries
-                # a single address up to nine times over ~36 seconds, which is
-                # exactly the wrong shape here: mesh relay means any node
-                # reaches the whole mesh, so nine tries at one node is far
-                # worse than one try at nine nodes. Observed on hardware -
-                # two unreachable nodes at the head of the list consumed the
-                # entire refresh budget every cycle for two hours while 40
-                # other nodes sat there advertising.
-                max_attempts=1,
-            )
+            # Bounded here rather than via establish_connection's own
+            # max_attempts, which was observed being ignored: the failure
+            # still reported "after 9 attempt(s)" and still cost ~40s per
+            # node with max_attempts=1 set. An explicit timeout is the only
+            # thing that reliably makes one node cheap, which is what lets a
+            # cycle walk past a dead node and reach a live one.
+            async with asyncio.timeout(CONNECT_TIMEOUT_SECONDS):
+                client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    ble_device,
+                    f"{DOMAIN}-{addr}",
+                    disconnected_callback=self._on_disconnect,
+                    max_attempts=1,
+                )
         except Exception as exc:
             self._recent_failures[mac] = time.monotonic()
             _LOGGER.debug("%s: could not connect to %s: %s", self.mesh_name, addr, exc)

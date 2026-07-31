@@ -75,7 +75,15 @@ HARVEST_WINDOW_SECONDS = 4
 # Each is now a single connection attempt rather than bleak's default
 # nine-try ladder, so trying more nodes is cheaper than trying one node
 # harder - which is the right shape when any node reaches the whole mesh.
-MAX_CONNECT_ATTEMPTS = 8
+MAX_CONNECT_ATTEMPTS = 6
+
+# Hard ceiling on one node's connection attempt. bleak_retry_connector's own
+# max_attempts was observed being ignored - failures still reported "after 9
+# attempt(s)" and still cost ~40s with it set to 1 - so this is enforced here
+# instead. Two dead nodes at 40s each were consuming an entire refresh budget
+# while forty live ones waited; at this bound the same cycle reaches all of
+# them.
+CONNECT_TIMEOUT_SECONDS = 9
 
 # How long a node that refused a connection is sent to the back of the queue.
 # The usual failure is "the adapter is out of connection slots", which says
