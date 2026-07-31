@@ -79,17 +79,20 @@ HARVEST_WINDOW_SECONDS = 4
 MAX_CONNECT_ATTEMPTS = 3
 
 
-# Hard ceiling on one refresh, harvest included. Capping the number of
-# attempts was not enough on real hardware - bleak_retry_connector runs its
-# own retry ladder inside a single establish_connection call, so a handful of
-# attempts is a handful of ladders.
+# When a cycle stops starting new connection attempts. Deliberately a
+# deadline rather than a timeout: cancelling an in-flight
+# establish_connection leaks the connection slot it reserved from Home
+# Assistant's Bluetooth manager, and a leaked pool never recovers on its own
+# - it survived restarts, because the first cycle after boot re-leaked it.
 #
-# Deliberately below DEFAULT_REFRESH_INTERVAL_SECONDS: a refresh that outlives
-# its own interval would have the next one queued behind it permanently, and
-# the adapter would never be handed back. Also comfortably above a healthy
-# cycle - set too close, as it briefly was at 35s, and normal connection
-# variance reads as failure.
-REFRESH_TIMEOUT_SECONDS = 75
+# That was the cause of two separate total outages here, once from a timeout
+# around each attempt and once from the refresh-wide timeout above it. Both
+# looked like the adapter being exhausted; in both cases BlueZ had zero open
+# connections and a raw BleakClient connected instantly.
+#
+# So nothing here cancels a connection. A cycle simply stops starting new
+# ones when it is out of time, and picks up where it left off next refresh.
+HARVEST_DEADLINE_SECONDS = 45
 
 # Mesh address 0 is broadcast - it commands every device at once. Never a valid
 # target for a single entity.

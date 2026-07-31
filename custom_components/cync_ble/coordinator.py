@@ -56,9 +56,9 @@ from .const import (
     CONF_MESH_PASSWORD,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
     DOMAIN,
+    HARVEST_DEADLINE_SECONDS,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
-    REFRESH_TIMEOUT_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -226,8 +226,20 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             len(self._known_good),
             MAX_CONNECT_ATTEMPTS,
         )
+        # A deadline checked BETWEEN attempts, never a timeout wrapped around
+        # one. Cancelling an in-flight establish_connection leaks the
+        # connection slot it reserved, and a leaked pool never recovers - see
+        # _connect_to. So a cycle stops starting new attempts once it is out
+        # of time, and always lets the one it started finish.
+        deadline = time.monotonic() + HARVEST_DEADLINE_SECONDS
         session = None
         for mac in candidates[:MAX_CONNECT_ATTEMPTS]:
+            if time.monotonic() > deadline:
+                _LOGGER.debug(
+                    "%s: out of time for this cycle, will resume next refresh",
+                    self.mesh_name,
+                )
+                break
             session = await self._connect_to(mac)
             if session is not None:
                 break
@@ -269,6 +281,11 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             # Timing out here is expected, and is the point: the callback
             # was registered before the write that will be refused, so the
             # sweep has been arriving throughout.
+            #
+            # Cancelling IS safe here, unlike around establish_connection: the
+            # connection already exists and the `finally` below closes it, so
+            # there is no half-allocated slot to strand. The rule is about
+            # cancelling connection setup, not cancelling anything at all.
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
                     client.start_notify(NOTIFICATION_CHAR, _on_notification),
@@ -411,14 +428,10 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         Bounded, because this also runs during setup: see
         REFRESH_TIMEOUT_SECONDS.
         """
-        try:
-            async with asyncio.timeout(REFRESH_TIMEOUT_SECONDS):
-                await self._async_harvest()
-        except TimeoutError as exc:
-            raise UpdateFailed(
-                f"Gave up harvesting mesh {self.mesh_name!r} after "
-                f"{REFRESH_TIMEOUT_SECONDS}s"
-            ) from exc
+        # No asyncio.timeout here either, for the same reason: it would cancel
+        # whatever connection was in flight and leak its slot. _async_harvest
+        # bounds itself by deadline instead, so this cannot run away.
+        await self._async_harvest()
 
         if not self.device_states:
             raise UpdateFailed(
