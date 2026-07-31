@@ -443,6 +443,18 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         for a capability they never lose.
         """
         if not self.state_polling_active:
+            # Paused, but not idle. Hold a link open and check it is still
+            # alive, which is exactly what this coordinator did before
+            # harvesting existed.
+            #
+            # This is deliberately NOT "connect only when a command arrives".
+            # Establishing a connection is the unreliable operation on this
+            # transport - the sending itself has never failed - so a
+            # reconnect per command would put the fragile step in front of
+            # every user action. One persistent link that never subscribes
+            # stays healthy indefinitely (confirmed: "never subscribe ->
+            # sending works"), and costs one of the adapter's five slots.
+            await self._async_ensure_connected()
             return self.device_states
 
         await self._async_harvest()

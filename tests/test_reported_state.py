@@ -130,16 +130,32 @@ async def test_state_polling_pauses_after_repeated_failure(hass):
     assert coordinator.state_polling_active is False
 
 
-async def test_a_paused_integration_stops_touching_the_radio(hass):
-    """The whole point of the fallback: no periodic connection attempts."""
+async def test_a_paused_integration_stops_harvesting_but_keeps_its_link(hass):
+    """Pausing state polling must not mean going idle.
+
+    Establishing a connection is the unreliable step on this transport, so
+    dropping the link between commands would put the fragile operation in
+    front of every user action. The paused mode holds one link open and
+    health-checks it - which is what this coordinator did before harvesting
+    existed - and only stops the sacrificial harvest.
+    """
     coordinator = _coordinator(hass)
     coordinator._harvest_paused_until = time.monotonic() + 3600
-    called = False
+    harvested = False
+    ensured = False
 
     async def _should_not_run() -> None:
-        nonlocal called
-        called = True
+        nonlocal harvested
+        harvested = True
+
+    async def _ensure():
+        nonlocal ensured
+        ensured = True
 
     coordinator._async_harvest = _should_not_run
+    coordinator._async_ensure_connected = _ensure
+
     await coordinator._async_update_data()
-    assert called is False
+
+    assert harvested is False, "a paused coordinator must not harvest"
+    assert ensured is True, "but it must still keep a link alive"

@@ -220,10 +220,16 @@ for hours, while a raw `BleakClient` on the same box collected 38/38 devices
 throughout.
 
 So harvesting gives up rather than grinding. After a few consecutive failures
-state polling pauses for an hour, and the integration reverts to what it did
-before harvesting existed: commands connect on demand, entities report the
-last state commanded (`assumed_state`), and the radio is untouched between
-user actions. That is a real loss — a physically-operated switch stops being
+state polling pauses for an hour and the integration reverts to exactly what
+it did before harvesting existed: **one persistent link, health-checked**,
+never subscribed to, with entities reporting the last state commanded
+(`assumed_state`).
+
+That is deliberately not "connect only when a command arrives". Establishing
+a connection is the unreliable operation on this transport — the sending
+itself has never once failed — so reconnecting per command would put the
+fragile step in front of every user action. A link that never subscribes
+stays healthy indefinitely, and costs one of the adapter's five slots. That is a real loss — a physically-operated switch stops being
 noticed — but holding a shared adapter for over a minute at a time to keep
 failing at it is worse, and starves whatever else needs that radio.
 
