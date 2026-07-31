@@ -163,8 +163,36 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # second proven node gets discovered), then rested-but-proven, then
         # known refusals oldest-first.
         known_good.sort(key=lambda mac: self._last_used.get(mac, 0.0))
+        # Strongest signal first among nodes we know nothing about. This is
+        # what stops a walk burning its budget on nodes Home Assistant lists
+        # as connectable but has no signal from (RSSI -127), which is exactly
+        # what made `light.turn_on` fail after 90s while a perfectly
+        # reachable node sat further down the list.
+        untried.sort(key=self._signal, reverse=True)
         failed.sort(key=lambda mac: self._recent_failures.get(mac, 0.0))
         return known_good + untried + resting + failed
+
+    def _signal(self, mac: str) -> int:
+        """Signal strength for a node, or a floor if there is none.
+
+        Home Assistant reports -127 for a device it has in connectable
+        history but has no real signal from, and those are precisely the
+        nodes that refuse connections here - the ones that broke
+        `light.turn_on` were all -127 while the node a direct client
+        connects to every time had real signal. Sorting by this is what
+        keeps a cycle from spending its whole budget on unreachable nodes.
+        """
+        best = -127
+        for candidate in address.candidates(mac):
+            try:
+                info = bluetooth.async_last_service_info(
+                    self.hass, candidate, connectable=True
+                )
+            except Exception:  # never let ordering fail the whole cycle
+                continue
+            if info is not None and info.rssi is not None:
+                best = max(best, info.rssi)
+        return best
 
     def _resolve(self, mac: str) -> tuple[Any, str] | None:
         """Find the real Bluetooth address behind one stored MAC.

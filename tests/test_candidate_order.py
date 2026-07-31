@@ -112,3 +112,25 @@ async def test_a_rested_node_still_beats_known_refusals(hass):
         coordinator._recent_failures[mac] = 1.0
     order = coordinator._candidate_macs()
     assert order[0] == ANSWERS
+
+
+async def test_untried_nodes_are_ordered_by_signal(hass):
+    """The fix for a real failure: `light.turn_on` spent 90 seconds refusing
+    to connect to three nodes Home Assistant listed as connectable but had no
+    signal from (RSSI -127), while a node with real signal sat further down
+    the list and connects on every attempt."""
+    coordinator = _coordinator(hass, [*REFUSING, ANSWERS])
+    signals = {ANSWERS: -55, REFUSING[0]: -127, REFUSING[1]: -127, REFUSING[2]: -90}
+    coordinator._signal = lambda mac: signals[mac]
+
+    order = coordinator._candidate_macs()
+
+    assert order[0] == ANSWERS, "strongest signal must be tried first"
+    assert order[-1] in (REFUSING[0], REFUSING[1]), "no-signal nodes go last"
+
+
+async def test_signal_lookup_failure_does_not_break_ordering(hass):
+    """Ordering is an optimisation. If the Bluetooth stack cannot answer,
+    the walk must still happen rather than the whole cycle failing."""
+    coordinator = _coordinator(hass)
+    assert coordinator._candidate_macs()  # _signal hits a real, absent manager
