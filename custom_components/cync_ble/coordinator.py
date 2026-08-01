@@ -93,6 +93,11 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # See direct_client.py - the point is that only the GATT client
         # changes; everything above it is identical.
         self.direct_adapter: str = entry.options.get(CONF_DIRECT_ADAPTER, ADAPTER_NONE)
+        # Set once if direct mode is configured but cannot actually run, so
+        # the integration falls back to Home Assistant's stack instead of
+        # failing every cycle. A missing optional dependency must not brick
+        # an integration that works perfectly well without it.
+        self._direct_disabled = False
 
         self._client: BleakClientWithServiceCache | None = None
         self.session: BleMeshSession | None = None
@@ -388,7 +393,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
 
     @property
     def direct_mode(self) -> bool:
-        return self.direct_adapter != ADAPTER_NONE
+        return self.direct_adapter != ADAPTER_NONE and not self._direct_disabled
 
     async def _connect_to(self, mac: str) -> BleMeshSession | None:
         if self.direct_mode:
@@ -431,8 +436,20 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                     addr, self.direct_adapter, disconnected_callback=self._on_disconnect
                 )
                 await client.connect()
-            except DirectClientUnavailable:
-                raise
+            except DirectClientUnavailable as exc:
+                # Configured for direct mode, but the optional backend is not
+                # installed. Degrade to Home Assistant's stack rather than
+                # failing forever - observed failing every cycle in 0.005s,
+                # which is a bricked integration with no useful error.
+                self._direct_disabled = True
+                _LOGGER.error(
+                    "%s: a dedicated adapter (%s) is configured but cannot be "
+                    "used, so falling back to Home Assistant's Bluetooth. %s",
+                    self.mesh_name,
+                    self.direct_adapter,
+                    exc,
+                )
+                return await self._connect_to(mac)
             except Exception as exc:
                 _LOGGER.debug(
                     "%s: direct connect to %s on %s failed: %s",

@@ -9,6 +9,7 @@ wins" would make every toggle visibly snap back.
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 import pytest
 from cync_lan.ble_mesh import DeviceStatus
@@ -159,3 +160,49 @@ async def test_a_paused_integration_stops_harvesting_but_keeps_its_link(hass):
 
     assert harvested is False, "a paused coordinator must not harvest"
     assert ensured is True, "but it must still keep a link alive"
+
+
+async def test_a_missing_bumble_backend_degrades_instead_of_bricking(hass):
+    """Configuring a dedicated adapter without the optional backend
+    installed must not disable the integration.
+
+    Observed on a real install: every cycle failed in 0.005s with no useful
+    error, because DirectClientUnavailable propagated instead of degrading.
+    The integration works perfectly well on Home Assistant's own stack, so
+    that is where it should land.
+    """
+    from custom_components.cync_ble.const import CONF_DIRECT_ADAPTER
+    from custom_components.cync_ble.direct_client import DirectClientUnavailable
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="meshname",
+        data={
+            CONF_MESH_NAME: "meshname",
+            CONF_MESH_PASSWORD: "meshpass",
+            CONF_DEVICES: [
+                {"id": TARGET, "name": "d", "type": 48, "mac": "F4BCDA32A971"}
+            ],
+        },
+        options={CONF_DIRECT_ADAPTER: "hci1"},
+    )
+    entry.add_to_hass(hass)
+    coordinator = CyncBleCoordinator(hass, entry)
+    assert coordinator.direct_mode is True
+
+    with (
+        patch(
+            "custom_components.cync_ble.coordinator.build_direct_client",
+            side_effect=DirectClientUnavailable("not installed"),
+        ),
+        patch(
+            "custom_components.cync_ble.coordinator.bluetooth."
+            "async_ble_device_from_address",
+            return_value=None,
+        ),
+    ):
+        # Falls through to the Home Assistant path, which finds nothing here -
+        # reaching it at all is the point.
+        assert await coordinator._connect_to("F4BCDA32A971") is None
+
+    assert coordinator.direct_mode is False, "direct mode must switch itself off"
