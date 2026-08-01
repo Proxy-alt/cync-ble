@@ -27,7 +27,8 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .adapters import (
     ADAPTER_NONE,
     async_list_adapters,
-    is_selectable,
+    is_known,
+    needs_takeover_confirmation,
     selection_options,
 )
 from .classify import is_light, is_switch
@@ -228,6 +229,9 @@ class CyncBleOptionsFlow(config_entries.OptionsFlow):
     and it is the option most likely to need undoing.
     """
 
+    def __init__(self) -> None:
+        self._pending: str | None = None
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
@@ -236,11 +240,15 @@ class CyncBleOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             chosen = user_input.get(CONF_DIRECT_ADAPTER, ADAPTER_NONE)
-            if is_selectable(choices, chosen):
+            if not is_known(choices, chosen):
+                # A stored choice can name a dongle that has been unplugged.
+                errors["base"] = "adapter_missing"
+            elif needs_takeover_confirmation(choices, chosen) is not None:
+                # Allowed, but not from a dropdown alone - see the next step.
+                self._pending = chosen
+                return await self.async_step_confirm_takeover()
+            else:
                 return self.async_create_entry(data={CONF_DIRECT_ADAPTER: chosen})
-            # Taking this adapter would pull the radio out from under Home
-            # Assistant's own scanner and every other integration using it.
-            errors["base"] = "adapter_in_use"
 
         current = self.config_entry.options.get(CONF_DIRECT_ADAPTER, ADAPTER_NONE)
         options = selection_options(choices)
@@ -258,5 +266,40 @@ class CyncBleOptionsFlow(config_entries.OptionsFlow):
             description_placeholders={
                 "free": str(sum(1 for c in choices if c.selectable)),
                 "total": str(len(choices)),
+            },
+        )
+
+    async def async_step_confirm_takeover(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Second confirmation for taking a radio Home Assistant is using.
+
+        Deliberately a checkbox that must be ticked rather than a plain
+        submit button: this is not "are you sure", it is "this will stop
+        every other Bluetooth integration on this machine working", and it
+        should take a deliberate action rather than a reflexive Enter.
+        """
+        assert self._pending is not None
+        choices = await async_list_adapters(self.hass)
+        target = needs_takeover_confirmation(choices, self._pending)
+        if target is None:
+            # Freed up between steps - nothing to warn about any more.
+            return self.async_create_entry(data={CONF_DIRECT_ADAPTER: self._pending})
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if user_input.get("confirm"):
+                return self.async_create_entry(
+                    data={CONF_DIRECT_ADAPTER: self._pending}
+                )
+            errors["base"] = "not_confirmed"
+
+        return self.async_show_form(
+            step_id="confirm_takeover",
+            data_schema=vol.Schema({vol.Required("confirm", default=False): bool}),
+            errors=errors,
+            description_placeholders={
+                "adapter": target.adapter,
+                "label": target.label,
             },
         )

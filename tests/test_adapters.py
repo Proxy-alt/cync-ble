@@ -11,7 +11,8 @@ from __future__ import annotations
 from custom_components.cync_ble.adapters import (
     ADAPTER_NONE,
     AdapterChoice,
-    is_selectable,
+    is_known,
+    needs_takeover_confirmation,
     selection_options,
 )
 
@@ -19,25 +20,29 @@ FREE = AdapterChoice("hci1", "AA:BB:CC:DD:EE:01", "Spare dongle", in_use_by_hass
 BUSY = AdapterChoice("hci0", "AA:BB:CC:DD:EE:00", "Built-in", in_use_by_hass=True)
 
 
-def test_doing_nothing_is_always_allowed():
-    assert is_selectable([], ADAPTER_NONE)
-    assert is_selectable([BUSY], ADAPTER_NONE)
+def test_doing_nothing_needs_no_confirmation():
+    assert needs_takeover_confirmation([BUSY], ADAPTER_NONE) is None
+    assert is_known([BUSY], ADAPTER_NONE)
 
 
-def test_a_free_adapter_may_be_taken():
-    assert is_selectable([FREE, BUSY], "hci1")
+def test_a_free_adapter_needs_no_confirmation():
+    """Taking a spare dongle costs nobody anything, so it should not nag."""
+    assert needs_takeover_confirmation([FREE, BUSY], "hci1") is None
 
 
-def test_the_adapter_hass_is_using_may_not_be_taken():
-    """The guardrail. Taking hci0 here would black out every other
-    Bluetooth integration on the machine."""
-    assert not is_selectable([FREE, BUSY], "hci0")
+def test_taking_the_adapter_hass_uses_requires_confirmation():
+    """Allowed - it is the user's machine - but never straight from a
+    dropdown, because it stops every other Bluetooth integration working."""
+    target = needs_takeover_confirmation([FREE, BUSY], "hci0")
+    assert target is not None
+    assert target.adapter == "hci0"
 
 
-def test_an_unknown_adapter_is_refused():
-    """A stored choice for a dongle that has since been unplugged must not
-    be silently honoured."""
-    assert not is_selectable([FREE], "hci9")
+def test_an_unplugged_adapter_is_refused():
+    """A stored choice can name a dongle that is no longer there; it must
+    not be silently honoured."""
+    assert not is_known([FREE], "hci9")
+    assert is_known([FREE], "hci1")
 
 
 def test_busy_adapters_are_shown_with_a_reason_not_hidden():

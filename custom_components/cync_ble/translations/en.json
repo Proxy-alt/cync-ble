@@ -42,14 +42,19 @@
     "step": {
       "init": {
         "title": "Bluetooth adapter",
-        "description": "Cync devices refuse the descriptor write Home Assistant's Bluetooth stack performs when subscribing, and the connection is dropped as a result. Dedicating a **spare** adapter lets this integration drive it directly and avoid that entirely.\n\nThis takes the adapter away from Home Assistant and every other integration completely, for as long as it is in use — so only a second, unused adapter is offered. {free} of {total} adapter(s) are free.\n\nLeave this on the default unless you have a spare Bluetooth dongle.",
+        "description": "Cync devices refuse the descriptor write Home Assistant's Bluetooth stack performs when subscribing, and the connection is dropped as a result. Dedicating a **spare** adapter lets this integration drive it directly and avoid that entirely.\n\nAn adapter used this way is taken away from Home Assistant completely for as long as it is in use. Adapters already in use are still offered, but choosing one asks for confirmation first. {free} of {total} adapter(s) are currently free.\n\nLeave this on the default unless you have a spare Bluetooth dongle.",
         "data": {
           "direct_adapter": "Adapter to use"
         }
+      },
+      "confirm_takeover": {
+        "title": "Take {adapter} away from Home Assistant?",
+        "description": "**{label}** is the adapter Home Assistant is currently using for Bluetooth.\n\nIf you continue, this integration takes it over exclusively. For as long as it does:\n\n- Home Assistant's Bluetooth scanner stops working on this adapter\n- Every other Bluetooth integration relying on it — locks, sensors, beacons, thermostats — stops working\n- Bluetooth discovery of new devices stops\n\nThis is reversible: set the adapter back to the default here and restart to hand it back.\n\nOnly continue if this machine has another way to reach your other Bluetooth devices, such as an ESPHome Bluetooth proxy, or if you do not use any."
       }
     },
     "error": {
-      "adapter_in_use": "That adapter is in use by Home Assistant. Choosing it would take Bluetooth away from every other integration. Pick a spare adapter, or leave the default."
+      "adapter_missing": "That adapter is no longer present. It may have been unplugged — reopen this page to see the current list.",
+      "not_confirmed": "Tick the box to confirm you want to take this adapter away from Home Assistant, or go back and choose a different one."
     }
   }
 }

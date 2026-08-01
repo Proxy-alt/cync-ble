@@ -14,10 +14,11 @@ radio - other integrations, Home Assistant's own scanner - loses it. So this
 must never be pointed at the adapter Home Assistant is already using, and
 this module exists mainly to make that mistake hard to commit.
 
-Hence: opt-in, off by default, and adapters currently backing a Home
-Assistant scanner are offered as unselectable rather than silently hidden -
-someone with one adapter should be told why they cannot use this, not left
-wondering where the option went.
+Hence: opt-in, off by default, and taking an adapter Home Assistant is
+already using requires an explicit second confirmation naming what will
+break. It is allowed - it is the user's machine, and dedicating the only
+adapter is a legitimate choice - but it should never happen by accident from
+a dropdown.
 """
 
 from __future__ import annotations
@@ -115,8 +116,29 @@ def selection_options(choices: list[AdapterChoice]) -> dict[str, str]:
     return options
 
 
-def is_selectable(choices: list[AdapterChoice], adapter: str) -> bool:
-    """Whether a stored/submitted adapter may actually be taken over."""
+def is_known(choices: list[AdapterChoice], adapter: str) -> bool:
+    """Whether this is an adapter that actually exists right now.
+
+    A stored choice can name a dongle that has since been unplugged, so
+    this is checked on submit rather than trusted from the config entry.
+    """
     if adapter == ADAPTER_NONE:
         return True
-    return any(c.adapter == adapter and c.selectable for c in choices)
+    return any(c.adapter == adapter for c in choices)
+
+
+def needs_takeover_confirmation(
+    choices: list[AdapterChoice], adapter: str
+) -> AdapterChoice | None:
+    """The adapter, if choosing it would take Bluetooth from Home Assistant.
+
+    Returns None when the choice is harmless - either opting out, or an
+    adapter nothing else is using. A non-None return is the caller's cue to
+    ask a second time, with the consequence spelled out.
+    """
+    if adapter == ADAPTER_NONE:
+        return None
+    for choice in choices:
+        if choice.adapter == adapter and choice.in_use_by_hass:
+            return choice
+    return None
