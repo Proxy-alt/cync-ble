@@ -17,6 +17,13 @@ CONF_MESH_PASSWORD = "mesh_password"
 CONF_NODE_ADDRESS = "node_address"
 CONF_DEVICES = "devices"
 
+# Which local Bluetooth adapter, if any, to drive directly over
+# HCI_CHANNEL_USER instead of going through Home Assistant's stack. See
+# adapters.py - this takes the adapter away from BlueZ entirely, so it is
+# opt-in, defaults to off, and must never point at the adapter Home
+# Assistant is itself using.
+CONF_DIRECT_ADAPTER = "direct_adapter"
+
 # Each entry in CONF_DEVICES: {"id": int, "name": str, "type": int, "mac": str}.
 # "id" is the mesh device id `send()` targets; "mac" is that specific node's
 # own BLE address, one of several the coordinator may connect to as the

@@ -21,14 +21,22 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .adapters import (
+    ADAPTER_NONE,
+    async_list_adapters,
+    is_selectable,
+    selection_options,
+)
 from .classify import is_light, is_switch
 from .cloud import CyncAuthError, CyncCloud, CyncCloudError
 from .const import (
     CONF_ACCOUNT_PASSWORD,
     CONF_ACCOUNT_USERNAME,
     CONF_DEVICES,
+    CONF_DIRECT_ADAPTER,
     CONF_HOME_NAME,
     CONF_MESH_NAME,
     CONF_MESH_PASSWORD,
@@ -201,5 +209,54 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "home_name": self._chosen,
                 "device_count": str(len(home["devices"])),
+            },
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> CyncBleOptionsFlow:
+        return CyncBleOptionsFlow()
+
+
+class CyncBleOptionsFlow(config_entries.OptionsFlow):
+    """Pick a Bluetooth adapter to drive directly, or none.
+
+    Separate from setup on purpose: the account login is a one-off, while
+    which radio to use is something people change when they add a dongle -
+    and it is the option most likely to need undoing.
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        choices = await async_list_adapters(self.hass)
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            chosen = user_input.get(CONF_DIRECT_ADAPTER, ADAPTER_NONE)
+            if is_selectable(choices, chosen):
+                return self.async_create_entry(data={CONF_DIRECT_ADAPTER: chosen})
+            # Taking this adapter would pull the radio out from under Home
+            # Assistant's own scanner and every other integration using it.
+            errors["base"] = "adapter_in_use"
+
+        current = self.config_entry.options.get(CONF_DIRECT_ADAPTER, ADAPTER_NONE)
+        options = selection_options(choices)
+        if current not in options:
+            current = ADAPTER_NONE
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_DIRECT_ADAPTER, default=current): vol.In(options),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "free": str(sum(1 for c in choices if c.selectable)),
+                "total": str(len(choices)),
             },
         )
