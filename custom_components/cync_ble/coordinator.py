@@ -50,8 +50,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import address
+from .adapters import ADAPTER_NONE
 from .const import (
     CONF_DEVICES,
+    CONF_DIRECT_ADAPTER,
     CONF_KNOWN_GOOD,
     CONF_MESH_NAME,
     CONF_MESH_PASSWORD,
@@ -65,6 +67,7 @@ from .const import (
     MAX_KNOWN_GOOD,
     NODE_REST_SECONDS,
 )
+from .direct_client import DirectClientUnavailable, build_direct_client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,6 +88,11 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self.mesh_name: str = entry.data[CONF_MESH_NAME]
         self.mesh_password: str = entry.data[CONF_MESH_PASSWORD]
         self.devices: list[dict[str, Any]] = entry.data[CONF_DEVICES]
+        # When set, this integration drives that adapter itself through
+        # bumble instead of going through Home Assistant's Bluetooth stack.
+        # See direct_client.py - the point is that only the GATT client
+        # changes; everything above it is identical.
+        self.direct_adapter: str = entry.options.get(CONF_DIRECT_ADAPTER, ADAPTER_NONE)
 
         self._client: BleakClientWithServiceCache | None = None
         self.session: BleMeshSession | None = None
@@ -259,13 +267,19 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         """
         await self._async_close_link()
 
-        candidates = [m for m in self._candidate_macs() if self._resolve(m)]
+        # Home Assistant only knows what is reachable on the adapter IT is
+        # scanning with, so its view is meaningless for a dedicated one.
+        if self.direct_mode:
+            candidates = self._candidate_macs()
+        else:
+            candidates = [m for m in self._candidate_macs() if self._resolve(m)]
         _LOGGER.debug(
-            "%s: %d node(s) visible, %d proven; trying up to %d",
+            "%s: %d candidate node(s), %d proven; trying up to %d (%s)",
             self.mesh_name,
             len(candidates),
             len(self._known_good),
             MAX_CONNECT_ATTEMPTS,
+            f"direct via {self.direct_adapter}" if self.direct_mode else "via HA stack",
         )
         # A deadline checked BETWEEN attempts, never a timeout wrapped around
         # one. Cancelling an in-flight establish_connection leaks the
@@ -372,27 +386,18 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             except Exception:
                 _LOGGER.debug("%s: error closing link", self.mesh_name, exc_info=True)
 
+    @property
+    def direct_mode(self) -> bool:
+        return self.direct_adapter != ADAPTER_NONE
+
     async def _connect_to(self, mac: str) -> BleMeshSession | None:
+        if self.direct_mode:
+            return await self._connect_direct(mac)
         resolved = self._resolve(mac)
         if resolved is None:
             return None
         ble_device, addr = resolved
         try:
-            # NOT wrapped in a cancelling timeout, however tempting.
-            #
-            # A cancelled establish_connection does not release the
-            # connection slot it reserved from Home Assistant's Bluetooth
-            # manager. Ten cancelled attempts in one cycle exhausted the pool
-            # outright: BlueZ showed zero open connections while every
-            # subsequent attempt was refused with "the adapter is out of
-            # connection slots", and a raw BleakClient - which bypasses that
-            # accounting - connected to the same mesh instantly throughout.
-            # It never recovered on its own, and survived restarts because
-            # the first cycle after boot re-leaked the pool immediately.
-            #
-            # So each attempt is allowed to finish. max_attempts keeps it to
-            # one connection try; the slow part when no slot is free is the
-            # waiting, and cancelling that wait is precisely what breaks it.
             client = await establish_connection(
                 BleakClientWithServiceCache,
                 ble_device,
@@ -406,6 +411,52 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             _LOGGER.debug("%s: could not connect to %s: %s", self.mesh_name, addr, exc)
             return None
 
+        return await self._authenticate(client, mac, addr)
+
+    async def _connect_direct(self, mac: str) -> BleMeshSession | None:
+        """Connect over the dedicated adapter, without Home Assistant's stack.
+
+        Address resolution is skipped entirely: Home Assistant is not
+        scanning on this adapter, so it has no view of what is reachable
+        there. bumble connects by address directly, which also sidesteps the
+        connection-slot accounting that refused perfectly reachable nodes on
+        the shared adapter.
+
+        Byte order still has to be right, because the session key is derived
+        from the address - so both orientations are tried, as elsewhere.
+        """
+        for addr in address.candidates(mac):
+            try:
+                client = build_direct_client(
+                    addr, self.direct_adapter, disconnected_callback=self._on_disconnect
+                )
+                await client.connect()
+            except DirectClientUnavailable:
+                raise
+            except Exception as exc:
+                _LOGGER.debug(
+                    "%s: direct connect to %s on %s failed: %s",
+                    self.mesh_name,
+                    addr,
+                    self.direct_adapter,
+                    exc,
+                )
+                continue
+            session = await self._authenticate(client, mac, addr)
+            if session is not None:
+                return session
+        self._recent_failures[mac] = time.monotonic()
+        self._last_used[mac] = time.monotonic()
+        return None
+
+    async def _authenticate(
+        self, client: Any, mac: str, addr: str
+    ) -> BleMeshSession | None:
+        """Shared mesh handshake, whichever client got us here.
+
+        Both backends land in the same place on purpose - it is the evidence
+        that nothing above the GATT client needs to know which one is in use.
+        """
         # `addr`, not `mac` - the session key is derived from the address, so
         # it has to be the orientation the device actually answers on.
         session = BleMeshSession(client, addr, self.mesh_name, self.mesh_password)
@@ -459,7 +510,10 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         if self.session is not None and self.session.authenticated:
             return self.session
 
-        visible = [mac for mac in self._candidate_macs() if self._resolve(mac)]
+        if self.direct_mode:
+            visible = self._candidate_macs()
+        else:
+            visible = [mac for mac in self._candidate_macs() if self._resolve(mac)]
         for mac in visible[:MAX_CONNECT_ATTEMPTS]:
             session = await self._connect_to(mac)
             if session is not None:

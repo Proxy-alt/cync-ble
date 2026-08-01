@@ -96,3 +96,25 @@ async def test_adapters_are_refreshed_before_being_read(hass):
 
     manager.refresh.assert_awaited_once()
     assert [c.adapter for c in choices] == ["hci0"]
+
+
+def test_hci_index_is_extracted_for_the_transport():
+    """bumble's HCI_SOCKET transport wants the index, not the device name."""
+    from custom_components.cync_ble.direct_client import _adapter_index
+
+    assert _adapter_index("hci0") == "0"
+    assert _adapter_index("hci1") == "1"
+
+
+def test_an_unparseable_adapter_name_is_refused_not_guessed():
+    """Better to fail loudly than to silently drive adapter 0 - which would
+    be the one Home Assistant is using."""
+    import pytest
+
+    from custom_components.cync_ble.direct_client import (
+        DirectClientUnavailable,
+        _adapter_index,
+    )
+
+    with pytest.raises(DirectClientUnavailable):
+        _adapter_index("bluetooth")
