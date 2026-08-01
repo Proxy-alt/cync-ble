@@ -18,6 +18,18 @@ write is ever required. Because it is BleakClient-shaped, it satisfies the
 same `cync_lan.ble_mesh.GattClient` protocol the bleak path does, and
 `BleMeshSession` cannot tell the difference.
 
+**Deliberately not a manifest requirement.** It is not on PyPI, and a git
+URL there is not installable by Home Assistant - declaring it stopped the
+whole integration loading, for everyone, including the vast majority who
+never turn this on. It is imported lazily instead and its absence is a clear
+error on the one code path that needs it. Install it yourself to use direct
+mode:
+
+    pip install git+https://github.com/ekspla/bleak-bumble_dev_host_mode
+
+(the `ekspla` fork, which carries host-mode fixes over the original
+`vChavezB/bleak-bumble`).
+
 **Operational cost, stated plainly.** `HCI_SOCKET` binds `HCI_CHANNEL_USER`,
 which requires the adapter to be *down* and takes it away from BlueZ
 entirely for as long as it is held. This is only sane on an adapter nothing
@@ -63,8 +75,9 @@ def build_direct_client(address: str, adapter: str, **kwargs: Any) -> Any:
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise DirectClientUnavailable(
             "bleak-bumble is not installed, so a dedicated adapter cannot be "
-            "driven directly. Install it, or set the adapter back to the "
-            "default to use Home Assistant's Bluetooth."
+            "driven directly. Install it with 'pip install git+https://"
+            "github.com/ekspla/bleak-bumble_dev_host_mode', or set the "
+            "adapter back to the default to use Home Assistant's Bluetooth."
         ) from exc
 
     cfg = BumbleTransportCfg(TransportScheme.HCI_SOCKET, _adapter_index(adapter))

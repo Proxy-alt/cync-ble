@@ -13,8 +13,7 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Proxy-alt/cync-ble/issues",
   "requirements": [
-    "cync-lan>=0.6.0",
-    "bleak-bumble @ git+https://github.com/vChavezB/bleak-bumble@main"
+    "cync-lan>=0.6.0"
   ],
   "version": "0.1.0"
 }
