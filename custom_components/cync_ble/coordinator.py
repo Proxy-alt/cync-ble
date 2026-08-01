@@ -52,6 +52,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from . import address
 from .const import (
     CONF_DEVICES,
+    CONF_KNOWN_GOOD,
     CONF_MESH_NAME,
     CONF_MESH_PASSWORD,
     DEFAULT_REFRESH_INTERVAL_SECONDS,
@@ -61,6 +62,7 @@ from .const import (
     HARVEST_RETRY_AFTER_SECONDS,
     HARVEST_WINDOW_SECONDS,
     MAX_CONNECT_ATTEMPTS,
+    MAX_KNOWN_GOOD,
     NODE_REST_SECONDS,
 )
 
@@ -95,7 +97,9 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # remembering separately from "did not fail recently": on this mesh
         # most nodes never accept a connection at all, so having proven one
         # is a much stronger signal than not having tried it.
-        self._known_good: set[str] = set()
+        # Seeded from the config entry so hard-won knowledge survives a
+        # restart, and survives whatever was resetting it in memory.
+        self._known_good: set[str] = set(entry.options.get(CONF_KNOWN_GOOD, []))
         self._last_used: dict[str, float] = {}
 
         # What the mesh last told us about itself, by device id. Populated by
@@ -341,6 +345,23 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             len(self.device_states) - before,
         )
 
+    def _persist_known_good(self) -> None:
+        """Write newly-proven nodes back to the config entry.
+
+        Only on a genuine addition, never on every connect - this rewrites
+        stored options, and doing that on a 120s cycle for no change would be
+        pointless churn. Capped, because a mesh where everything answers does
+        not need a list of everything.
+        """
+        keep = sorted(self._known_good)[:MAX_KNOWN_GOOD]
+        try:
+            self.hass.config_entries.async_update_entry(
+                self.entry,
+                options={**self.entry.options, CONF_KNOWN_GOOD: keep},
+            )
+        except Exception:
+            _LOGGER.debug("Could not persist known-good nodes", exc_info=True)
+
     async def _async_close_link(self) -> None:
         """Drop whatever link is currently open. One at a time - this radio is
         shared with every other Bluetooth integration on the box."""
@@ -407,9 +428,11 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             return None
 
         self._client = client
-        self._known_good.add(mac)
         self._last_used[mac] = time.monotonic()
         self._recent_failures.pop(mac, None)
+        if mac not in self._known_good:
+            self._known_good.add(mac)
+            self._persist_known_good()
         return session
 
     async def _async_ensure_connected(self) -> BleMeshSession:

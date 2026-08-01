@@ -24,6 +24,17 @@ CONF_DEVICES = "devices"
 # Assistant is itself using.
 CONF_DIRECT_ADAPTER = "direct_adapter"
 
+# Nodes that have completed a mesh handshake, remembered across restarts.
+#
+# On this mesh most nodes never accept a connection at all, so knowing which
+# ones do is expensive to learn and worth keeping: a cycle that starts with a
+# proven node finishes in ~8s, one that has to rediscover takes 40-70s and
+# can fail outright. Learning it in memory alone was not enough - the count
+# was observed resetting to zero between cycles without the config entry
+# reloading, and the cause was never established, so this makes the knowledge
+# survive whatever does it.
+CONF_KNOWN_GOOD = "known_good_nodes"
+
 # Each entry in CONF_DEVICES: {"id": int, "name": str, "type": int, "mac": str}.
 # "id" is the mesh device id `send()` targets; "mac" is that specific node's
 # own BLE address, one of several the coordinator may connect to as the
@@ -84,6 +95,10 @@ HARVEST_WINDOW_SECONDS = 4
 # nine-try ladder, so trying more nodes is cheaper than trying one node
 # harder - which is the right shape when any node reaches the whole mesh.
 MAX_CONNECT_ATTEMPTS = 3
+
+# How many proven nodes to remember. Any one reaches the whole mesh, so this
+# only needs enough to rotate between when one is resting after a harvest.
+MAX_KNOWN_GOOD = 6
 
 
 # When a cycle stops starting new connection attempts. Deliberately a

@@ -134,3 +134,34 @@ async def test_signal_lookup_failure_does_not_break_ordering(hass):
     the walk must still happen rather than the whole cycle failing."""
     coordinator = _coordinator(hass)
     assert coordinator._candidate_macs()  # _signal hits a real, absent manager
+
+
+async def test_proven_nodes_survive_a_new_coordinator(hass):
+    """Proven nodes are seeded from the config entry, not just learned.
+
+    Learning them in memory alone was not enough: the count was seen
+    resetting to zero between cycles without the entry reloading, and the
+    cause was never established. Since a cycle that starts from a proven node
+    finishes in ~8s and one that rediscovers takes 40-70s or fails outright,
+    the knowledge is persisted so it survives whatever resets it.
+    """
+    from custom_components.cync_ble.const import CONF_KNOWN_GOOD
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="meshname",
+        data={
+            CONF_MESH_NAME: "meshname",
+            CONF_MESH_PASSWORD: "meshpass",
+            CONF_DEVICES: [
+                {"id": 1, "name": "d", "type": 48, "mac": m}
+                for m in [*REFUSING, ANSWERS]
+            ],
+        },
+        options={CONF_KNOWN_GOOD: [ANSWERS]},
+    )
+    entry.add_to_hass(hass)
+    coordinator = CyncBleCoordinator(hass, entry)
+
+    assert ANSWERS in coordinator._known_good
+    assert coordinator._candidate_macs()[0] == ANSWERS
