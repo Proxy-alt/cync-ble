@@ -23,10 +23,13 @@ a dropdown.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
+
+_LOGGER = logging.getLogger(__name__)
 
 # Sentinel for "don't do this" - the default, and the value that keeps the
 # integration on Home Assistant's own Bluetooth stack.
@@ -61,6 +64,7 @@ def _hass_adapters(hass: HomeAssistant) -> set[str]:
             if adapter:
                 in_use.add(adapter)
     except Exception:
+        _LOGGER.debug("Could not read current scanners", exc_info=True)
         return set()
     return in_use
 
@@ -73,31 +77,39 @@ async def async_list_adapters(hass: HomeAssistant) -> list[AdapterChoice]:
     """
     busy = _hass_adapters(hass)
 
-    def _collect() -> list[AdapterChoice]:
-        manager = bluetooth.get_adapters()
-        found = getattr(manager, "adapters", None) or {}
-        choices: list[AdapterChoice] = []
-        for adapter, details in sorted(found.items()):
-            address = details.get("address", "") if isinstance(details, dict) else ""
-            try:
-                label = bluetooth.adapter_title(adapter, details)
-            except Exception:
-                label = f"{adapter} ({address})" if address else adapter
-            choices.append(
-                AdapterChoice(
-                    adapter=adapter,
-                    address=address,
-                    label=label,
-                    in_use_by_hass=adapter in busy,
-                )
-            )
-        return choices
-
-    # get_adapters() touches D-Bus/sysfs, so it does not belong on the loop.
+    manager = bluetooth.get_adapters()
+    # get_adapters() only constructs the backend - `adapters` is empty until
+    # refresh() has done the D-Bus/sysfs work. Skipping this is why the
+    # picker showed nothing but "use Home Assistant's Bluetooth": the list
+    # was always empty, and a blanket `except` further down meant it failed
+    # silently rather than saying so.
     try:
-        return await hass.async_add_executor_job(_collect)
+        await manager.refresh()
     except Exception:
+        _LOGGER.exception("Could not enumerate local Bluetooth adapters")
         return []
+
+    choices: list[AdapterChoice] = []
+    for adapter, details in sorted(manager.adapters.items()):
+        address = details.get("address", "") if details else ""
+        try:
+            label = bluetooth.adapter_title(adapter, details)
+        except Exception:
+            label = f"{adapter} ({address})" if address else adapter
+        choices.append(
+            AdapterChoice(
+                adapter=adapter,
+                address=address,
+                label=label,
+                in_use_by_hass=adapter in busy,
+            )
+        )
+    _LOGGER.debug(
+        "Found %d local Bluetooth adapter(s); %d in use by Home Assistant",
+        len(choices),
+        sum(1 for c in choices if c.in_use_by_hass),
+    )
+    return choices
 
 
 def selection_options(choices: list[AdapterChoice]) -> dict[str, str]:

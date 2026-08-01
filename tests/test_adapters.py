@@ -56,3 +56,43 @@ def test_busy_adapters_are_shown_with_a_reason_not_hidden():
 def test_opting_out_is_offered_first():
     options = selection_options([FREE, BUSY])
     assert next(iter(options)) == ADAPTER_NONE
+
+
+async def test_adapters_are_refreshed_before_being_read(hass):
+    """Regression: the picker showed only "use Home Assistant's Bluetooth".
+
+    `get_adapters()` returns a backend whose `adapters` mapping is empty
+    until `refresh()` has done the D-Bus/sysfs work. The first version never
+    awaited it, so the list was always empty - and a blanket `except` meant
+    that failed silently rather than reporting anything.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from custom_components.cync_ble.adapters import async_list_adapters
+
+    manager = MagicMock()
+    manager.refresh = AsyncMock()
+    # Empty until refresh() runs, exactly like the real backend.
+    manager.adapters = {}
+
+    async def _populate() -> None:
+        manager.adapters = {
+            "hci0": {"address": "AA:BB:CC:DD:EE:00", "manufacturer": "Test"}
+        }
+
+    manager.refresh.side_effect = _populate
+
+    with (
+        patch(
+            "custom_components.cync_ble.adapters.bluetooth.get_adapters",
+            return_value=manager,
+        ),
+        patch(
+            "custom_components.cync_ble.adapters.bluetooth.async_current_scanners",
+            return_value=[],
+        ),
+    ):
+        choices = await async_list_adapters(hass)
+
+    manager.refresh.assert_awaited_once()
+    assert [c.adapter for c in choices] == ["hci0"]
