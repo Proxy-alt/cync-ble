@@ -259,3 +259,48 @@ async def test_proven_nodes_survive_a_new_coordinator(hass):
 
     assert ANSWERS in coordinator._known_good
     assert coordinator._candidate_macs()[0] == ANSWERS
+
+
+async def test_a_barren_node_does_not_consume_the_whole_harvest_cycle(hass):
+    """Connecting is not the goal - collecting is.
+
+    Observed on the first real run after proven-node selection changed: the
+    cycle reached a node of the refusing family, correctly demoted it, and then
+    stopped with 44 candidates untried, because the loop broke on a successful
+    *connection*. Such a node connects and authenticates perfectly and hands
+    back nothing, so it has to be walked past within the same cycle.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    coordinator = _coordinator(hass)
+    swept: list[str] = []
+
+    async def _connect(mac):
+        session = MagicMock()
+        session._mac = mac
+        coordinator._client = MagicMock()
+        return session
+
+    async def _sweep(session):
+        swept.append(session._mac)
+        # Only the last node in the list gives anything.
+        return 38 if session._mac == ANSWERS else 0
+
+    coordinator._connect_to = _connect
+    coordinator._sweep_through = _sweep
+    coordinator._async_close_link = AsyncMock()
+    coordinator._resolve = lambda mac: True
+    coordinator._known_good.add(REFUSING[0])  # seeded barren, tried first
+
+    # Exactly MAX_CONNECT_ATTEMPTS candidates, so this tests the walk rather
+    # than the budget - a barren node still costs a full connect plus a
+    # window, so the budget is spent either way.
+    with patch.object(
+        coordinator, "_candidate_macs", return_value=[*REFUSING[:2], ANSWERS]
+    ):
+        await coordinator._async_harvest()
+
+    assert len(swept) == 3, "a barren node must not end the cycle"
+    assert swept[-1] == ANSWERS, "the walk must reach a node that actually sweeps"
+    assert ANSWERS in coordinator._known_good
+    assert REFUSING[0] not in coordinator._known_good, "and demote the barren one"

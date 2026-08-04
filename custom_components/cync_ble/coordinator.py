@@ -339,8 +339,8 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # _connect_to. So a cycle stops starting new attempts once it is out
         # of time, and always lets the one it started finish.
         deadline = time.monotonic() + HARVEST_DEADLINE_SECONDS
-        session = None
-        harvest_mac = None
+        before = len(self.device_states)
+        reached_any = False
         for mac in candidates[:MAX_CONNECT_ATTEMPTS]:
             if time.monotonic() > deadline:
                 _LOGGER.debug(
@@ -349,14 +349,46 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 )
                 break
             session = await self._connect_to(mac)
-            if session is not None:
-                harvest_mac = mac
-                break
-        if session is None:
-            _LOGGER.debug("%s: no node reachable for a harvest", self.mesh_name)
-            return
+            if session is None:
+                continue
+            reached_any = True
+            collected = await self._sweep_through(session)
+            self._record_sweep(mac, collected)
+            _LOGGER.debug(
+                "%s: harvest via %s collected %d status record(s), %d device "
+                "states known (%d new)",
+                self.mesh_name,
+                mac,
+                collected,
+                len(self.device_states),
+                len(self.device_states) - before,
+            )
+            if collected:
+                self._last_harvest = time.monotonic()
+                return
+            # Connecting is not the goal - collecting is. A node of the
+            # refusing OUI family connects and authenticates perfectly and
+            # then hands back nothing, so stopping here on a successful
+            # *connection* spends the whole cycle on it and harvests nothing.
+            # Observed on the first real run after proven-node selection
+            # changed: the cycle reached a barren node, demoted it correctly,
+            # and then gave up with 44 candidates untried. Walk on instead -
+            # _record_sweep has already demoted this one for future cycles.
+            _LOGGER.debug(
+                "%s: %s gave nothing, trying the next candidate", self.mesh_name, mac
+            )
 
-        before = len(self.device_states)
+        self._last_harvest = time.monotonic()
+        if not reached_any:
+            _LOGGER.debug("%s: no node reachable for a harvest", self.mesh_name)
+
+    async def _sweep_through(self, session: BleMeshSession) -> int:
+        """Subscribe on an established session and collect what arrives.
+
+        Returns the number of status records decoded. Always closes the link:
+        a link that has subscribed is a dead link walking, and the caller may
+        want to try another node immediately.
+        """
         # Deliberately NOT BleMeshSession.subscribe(). That helper returns
         # False (rather than raising) if the vendor enable-write fails, which
         # is indistinguishable here from "subscribed and heard nothing" - and
@@ -410,18 +442,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         finally:
             await self._async_close_link()
 
-        self._last_harvest = time.monotonic()
-        if harvest_mac is not None:
-            self._record_sweep(harvest_mac, collected)
-        _LOGGER.debug(
-            "%s: harvest via %s collected %d status record(s), %d device states "
-            "known (%d new)",
-            self.mesh_name,
-            harvest_mac,
-            collected,
-            len(self.device_states),
-            len(self.device_states) - before,
-        )
+        return collected
 
     def _record_sweep(self, mac: str, collected: int) -> None:
         """Learn whether this node can actually harvest, from what it just did.

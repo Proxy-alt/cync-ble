@@ -7,6 +7,21 @@ library's own version scheme, which this integration depends on to do the
 actual protocol work, and of the
 [`cync-lan`](https://github.com/Proxy-alt/cync-lan) integration's.
 
+### 0.2.1
+
+**A barren node no longer consumes the whole harvest cycle.** Caught on the
+first real run of 0.2.0, which is exactly what it was meant to surface: the
+cycle reached a `78:6D:EB` node, correctly demoted it, and then stopped — with
+44 candidates untried — because the loop broke on a successful *connection*
+rather than a successful sweep. Those nodes connect and authenticate perfectly
+and hand back nothing, so the walk now continues to the next candidate within
+the same cycle.
+
+Note the interaction with `MAX_CONNECT_ATTEMPTS` (3): a barren node still costs
+a full connect plus a window, so it spends budget either way. What changed is
+that the budget now buys up to three *sweeps attempted* instead of one, and
+demotion means those nodes sink after a single cycle regardless.
+
 ### 0.2.0
 
 Two fixes, both about the same thing: the integration was preferring nodes that
