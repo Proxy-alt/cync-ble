@@ -217,9 +217,7 @@ async def test_an_offline_reading_fills_a_gap_but_never_overwrites(hass):
     """
     coordinator = _coordinator(hass)
 
-    offline = DeviceStatus(
-        device_id=TARGET, brightness=100, is_rgb=False, online=False
-    )
+    offline = DeviceStatus(device_id=TARGET, brightness=100, is_rgb=False, online=False)
     coordinator._on_mesh_status([offline])
     assert coordinator.device_states[TARGET].brightness == 100, (
         "with nothing known, an offline reading is better than none"
