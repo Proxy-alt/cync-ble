@@ -304,3 +304,71 @@ async def test_a_barren_node_does_not_consume_the_whole_harvest_cycle(hass):
     assert swept[-1] == ANSWERS, "the walk must reach a node that actually sweeps"
     assert ANSWERS in coordinator._known_good
     assert REFUSING[0] not in coordinator._known_good, "and demote the barren one"
+
+
+# ---------------------------------------------------------------------------
+# Connection slots. max_attempts does NOT bound this failure - see
+# _has_free_connection_slot.
+# ---------------------------------------------------------------------------
+
+
+async def test_no_attempt_is_made_when_every_slot_is_taken(hass):
+    """The 36-second trap. Out-of-slots is a *transient* error in
+    bleak_retry_connector, bounded by a hardcoded MAX_TRANSIENT_ERRORS of 9
+    with a 4s backoff - not by max_attempts. Three nodes of that is 108s
+    against a 45s deadline, so the attempt has to be skipped, not shortened.
+    """
+    from unittest.mock import MagicMock, patch
+
+    coordinator = _coordinator(hass)
+    coordinator._resolve = lambda mac: (MagicMock(), mac)
+
+    full = [MagicMock(free=0), MagicMock(free=0)]
+    with (
+        patch("habluetooth.get_manager") as manager,
+        patch("custom_components.cync_ble.coordinator.establish_connection") as connect,
+    ):
+        manager.return_value.async_current_allocations.return_value = full
+        result = await coordinator._connect_to(ANSWERS)
+
+    assert result is None
+    connect.assert_not_called(), "must not spend 36s finding out"
+    assert ANSWERS in coordinator._recent_failures
+
+
+async def test_an_attempt_is_made_when_a_slot_is_free(hass):
+    from unittest.mock import MagicMock, patch
+
+    coordinator = _coordinator(hass)
+    coordinator._resolve = lambda mac: (MagicMock(), mac)
+
+    with (
+        patch("habluetooth.get_manager") as manager,
+        patch("custom_components.cync_ble.coordinator.establish_connection") as connect,
+        patch.object(coordinator, "_authenticate", return_value=None),
+    ):
+        manager.return_value.async_current_allocations.return_value = [
+            MagicMock(free=0),
+            MagicMock(free=2),  # an ESPHome proxy with room
+        ]
+        await coordinator._connect_to(ANSWERS)
+
+    connect.assert_called_once()
+
+
+async def test_slot_check_fails_open(hass):
+    """If habluetooth changes shape or raises, connect anyway. A diagnostic
+    optimisation must never be why the integration stops working."""
+    from unittest.mock import MagicMock, patch
+
+    coordinator = _coordinator(hass)
+    coordinator._resolve = lambda mac: (MagicMock(), mac)
+
+    with (
+        patch("habluetooth.get_manager", side_effect=RuntimeError("gone")),
+        patch("custom_components.cync_ble.coordinator.establish_connection") as connect,
+        patch.object(coordinator, "_authenticate", return_value=None),
+    ):
+        await coordinator._connect_to(ANSWERS)
+
+    connect.assert_called_once()

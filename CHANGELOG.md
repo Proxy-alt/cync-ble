@@ -7,6 +7,39 @@ library's own version scheme, which this integration depends on to do the
 actual protocol work, and of the
 [`cync-lan`](https://github.com/Proxy-alt/cync-lan) integration's.
 
+### 0.2.2
+
+**`max_attempts=1` never bounded the failure it was added for.**
+
+`const.py` described the original problem — "bleak's default ladder spent ~36
+seconds retrying each one nine times" on nodes answering "out of connection
+slots" — and claimed it was "fixed at the source - one bounded attempt per
+node". Reading `bleak_retry_connector` shows it was not:
+
+```python
+TRANSIENT_ERRORS = {...} | OUT_OF_SLOTS_ERRORS
+...
+if (timeouts + connect_errors < max_attempts
+        and transient_errors < MAX_TRANSIENT_ERRORS):
+    return          # keep retrying
+```
+
+Out-of-slots is classified as a **transient** error, and transient errors are
+bounded by a hardcoded `MAX_TRANSIENT_ERRORS = 9` that takes no argument.
+`max_attempts` only bounds timeouts and connect errors. So the exact 9-attempt,
+4-second-backoff, ~36-second ladder the comment said was fixed was still
+running — three nodes of it is 108s against a 45s deadline, which is why cycles
+kept ending with most candidates untried.
+
+Observed live: five attempts and counting on a single node whose advertisement
+was 0 seconds old, with `max_attempts=1` set.
+
+The fix is to not start: `_has_free_connection_slot()` asks habluetooth for
+current slot allocations and skips the node when nothing is free. Any error, or
+a habluetooth that no longer exposes allocations, **fails open** and attempts
+the connection as before — a diagnostic optimisation must never be why the
+integration stops connecting.
+
 ### 0.2.1
 
 **A barren node no longer consumes the whole harvest cycle.** Caught on the

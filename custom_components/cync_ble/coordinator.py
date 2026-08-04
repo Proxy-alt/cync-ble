@@ -517,6 +517,50 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     def direct_mode(self) -> bool:
         return self.direct_adapter != ADAPTER_NONE and not self._direct_disabled
 
+    def _has_free_connection_slot(self) -> bool:
+        """Whether the Bluetooth stack has a connection slot free right now.
+
+        **`max_attempts=1` does not bound this failure**, which is why the
+        check exists. In `bleak_retry_connector`, `OUT_OF_SLOTS_ERRORS` is
+        folded into `TRANSIENT_ERRORS`:
+
+            TRANSIENT_ERRORS = {...} | OUT_OF_SLOTS_ERRORS
+
+        and `_raise_if_needed` bounds the two classes separately:
+
+            timeouts + connect_errors < max_attempts
+            and transient_errors < MAX_TRANSIENT_ERRORS
+
+        `MAX_TRANSIENT_ERRORS` is a hardcoded 9 and takes no argument. So "no
+        backend with an available connection slot" is retried **nine times
+        with a 4-second backoff - about 36 seconds - no matter what
+        max_attempts says**.
+
+        That is precisely the failure `MAX_CONNECT_ATTEMPTS`' comment in
+        const.py describes as already fixed ("bleak's default ladder spent ~36
+        seconds retrying each one nine times... that is fixed at the source -
+        one bounded attempt per node"). It was not fixed: `max_attempts=1`
+        bounds connect errors, and this is not one. Three nodes at 36s each is
+        108s against a 45s deadline, which is why cycles were ending with most
+        candidates untried.
+
+        Fails **open**: any error here, or a habluetooth that no longer
+        exposes allocations, returns True and lets the connection be attempted
+        as before. A diagnostic optimisation must never be the reason the
+        integration stops connecting.
+        """
+        try:
+            from habluetooth import get_manager
+
+            allocations = get_manager().async_current_allocations()
+        except Exception:  # see docstring: this must fail open
+            return True
+        if not allocations:
+            return True
+        # Any source with a free slot will do - an ESPHome proxy brings its
+        # own, uncontended by whatever shares the local adapter.
+        return any(getattr(alloc, "free", 0) > 0 for alloc in allocations)
+
     async def _connect_to(self, mac: str) -> BleMeshSession | None:
         if self.direct_mode:
             return await self._connect_direct(mac)
@@ -524,6 +568,17 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         if resolved is None:
             return None
         ble_device, addr = resolved
+        if not self._has_free_connection_slot():
+            # Skipping is the whole point - see _has_free_connection_slot for
+            # why attempting anyway costs ~36s rather than one failed try.
+            self._recent_failures[mac] = time.monotonic()
+            self._last_used[mac] = time.monotonic()
+            _LOGGER.debug(
+                "%s: no Bluetooth connection slot free, not attempting %s",
+                self.mesh_name,
+                addr,
+            )
+            return None
         try:
             client = await establish_connection(
                 BleakClientWithServiceCache,
