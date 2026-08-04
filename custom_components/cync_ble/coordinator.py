@@ -106,13 +106,42 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # shared pool of connection slots, and the common failure here is
         # "out of connection slots" rather than anything about the node.
         self._recent_failures: dict[str, float] = {}
-        # Nodes that have completed a mesh handshake at least once. Worth
-        # remembering separately from "did not fail recently": on this mesh
-        # most nodes never accept a connection at all, so having proven one
-        # is a much stronger signal than not having tried it.
-        # Seeded from the config entry so hard-won knowledge survives a
-        # restart, and survives whatever was resetting it in memory.
+        # Nodes that have completed a mesh handshake at least once. Good
+        # enough to send commands through - any authenticated node reaches the
+        # whole mesh - but NOT sufficient to harvest from; see _known_good.
+        self._connectable: set[str] = set(entry.options.get(CONF_KNOWN_GOOD, []))
+        # Nodes that have actually delivered a non-empty status sweep.
+        #
+        # This is a stricter thing than "authenticated", and the distinction is
+        # load-bearing. Measured across all 46 nodes of a real mesh, the
+        # firmware answers the subscribe two different ways depending on which
+        # OUI it carries, and only one of them can ever produce a sweep:
+        #
+        #   F4:BC:DA / 30:C0:1B  the CCCD write gets no ATT response at all,
+        #                        bleak keeps waiting, the callback stays
+        #                        registered, and 22 notifications covering 38
+        #                        of 46 devices arrive during the window.
+        #   78:6D:EB             the write is refused instantly with
+        #                        WRITE_NOT_PERMITTED, bleak raises, and the
+        #                        callback is discarded before the sweep starts.
+        #
+        # 10/10 and 3/3, at overlapping signal strengths, across four device
+        # types on the refusing OUI - so it tracks the silicon, not the
+        # product or the radio conditions. Both kinds authenticate happily,
+        # which is exactly why authentication is the wrong thing to remember.
+        #
+        # Seeded from the config entry under the OLD meaning ("authenticated"),
+        # which may include nodes that can never harvest. That self-corrects:
+        # the first harvest through such a node collects nothing and demotes it
+        # to _barren below.
         self._known_good: set[str] = set(entry.options.get(CONF_KNOWN_GOOD, []))
+        # Nodes that authenticated, were harvested through, and produced
+        # nothing. Still fine to command through - only useless to harvest
+        # from, so this demotes them for harvests alone.
+        self._barren: dict[str, float] = {}
+        # Best sweep size seen per node, used to decide which proven nodes are
+        # worth keeping when the persisted set is capped.
+        self._sweep_size: dict[str, int] = {}
         self._last_used: dict[str, float] = {}
 
         # What the mesh last told us about itself, by device id. Populated by
@@ -135,51 +164,52 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
     def mesh_available(self) -> bool:
         return self.session is not None and self.session.authenticated
 
-    def _candidate_macs(self) -> list[str]:
-        """Nodes to try, best first.
+    def _candidate_macs(self, *, for_harvest: bool = False) -> list[str]:
+        """Nodes to try, best first - and "best" differs by errand.
 
-        Ordering matters far more here than it looks. The stored device list
-        arrives in the cloud's own order, which on a real account is dominated
-        by one hardware family (`F4:BC:DA`) whose members consistently refuse
-        connections with "the adapter is out of connection slots", while the
-        handful of nodes that reliably answer sit near the end. Walking the
-        list in order meant grinding through refusals six at a time and
-        reaching a working node only by luck - three failed cycles before the
-        first success, and a repeat of that grind whenever the good node was
-        briefly unavailable.
+        Ordering matters far more here than it looks, because the two things
+        this integration does have different requirements of a node.
 
-        So proven nodes lead, **least recently used first**. That rotation is
-        deliberate: the harvest ends by having its link killed, and the node
-        that just happened to is the least likely to accept another connection
-        immediately. Rotating only among nodes already known to work is what
-        makes this safe - an earlier attempt that rotated across the whole
-        list simply spread the failures around and exhausted the adapter.
+        A **command** needs any node that authenticates; every one of them
+        reaches the whole mesh, so connecting fast is the only virtue.
+
+        A **harvest** additionally needs a node whose firmware leaves the
+        subscribe hanging rather than refusing it outright, because only the
+        hanging kind ever delivers a sweep (see `_known_good`). Nodes of the
+        refusing kind connect and authenticate perfectly well and then hand
+        back nothing, so for a harvest they belong below never-tried nodes -
+        while for a command they are among the best things available.
+
+        Proven nodes lead in both cases, **least recently used first**. That
+        rotation is deliberate: the harvest ends by having its link killed, and
+        the node that just served one is the least likely to accept another
+        connection immediately. Rotating only among nodes already known to work
+        is what makes this safe - an earlier attempt that rotated across the
+        whole list spread the failures around and exhausted the adapter.
         """
         now = time.monotonic()
-        known_good, resting, untried, failed = [], [], [], []
+        proven, barren, resting, untried, failed = [], [], [], [], []
         for device in self.devices:
             mac = device.get("mac")
             if not mac:
                 continue
             used_at = self._last_used.get(mac, 0.0)
+            # A node that served the last harvest had its link killed by it,
+            # and reliably refuses the next one - observed as a steady 72s
+            # cycle where the single proven node failed first every time. Rest
+            # it, and let the walk find a second proven node so there is
+            # something to rotate between.
+            is_resting = now - used_at < NODE_REST_SECONDS
             if mac in self._known_good:
-                # A node that served the last harvest had its link killed by
-                # it, and reliably refuses the next one - observed as a steady
-                # 72s cycle where the single proven node failed first every
-                # time. Rest it, and let the walk find a second proven node so
-                # there is something to rotate between.
-                if now - used_at < NODE_REST_SECONDS:
-                    resting.append(mac)
-                else:
-                    known_good.append(mac)
+                (resting if is_resting else proven).append(mac)
+            elif mac in self._barren or mac in self._connectable:
+                barren.append(mac)
             elif mac in self._recent_failures:
                 failed.append(mac)
             else:
                 untried.append(mac)
-        # Proven and rested first, then nodes never tried (which is how a
-        # second proven node gets discovered), then rested-but-proven, then
-        # known refusals oldest-first.
-        known_good.sort(key=lambda mac: self._last_used.get(mac, 0.0))
+        proven.sort(key=lambda mac: self._last_used.get(mac, 0.0))
+        barren.sort(key=lambda mac: self._last_used.get(mac, 0.0))
         # Strongest signal first among nodes we know nothing about. This is
         # what stops a walk burning its budget on nodes Home Assistant lists
         # as connectable but has no signal from (RSSI -127), which is exactly
@@ -187,7 +217,13 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # reachable node sat further down the list.
         untried.sort(key=self._signal, reverse=True)
         failed.sort(key=lambda mac: self._recent_failures.get(mac, 0.0))
-        return known_good + untried + resting + failed
+        if for_harvest:
+            # Never-tried nodes outrank known-barren ones: trying one might
+            # find a second node that actually sweeps, whereas a barren node
+            # is guaranteed to waste the attempt.
+            return proven + untried + resting + barren + failed
+        # For commands, a node known to authenticate beats an unknown one.
+        return proven + barren + untried + resting + failed
 
     def _signal(self, mac: str) -> int:
         """Signal strength for a node, or a floor if there is none.
@@ -275,9 +311,11 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # Home Assistant only knows what is reachable on the adapter IT is
         # scanning with, so its view is meaningless for a dedicated one.
         if self.direct_mode:
-            candidates = self._candidate_macs()
+            candidates = self._candidate_macs(for_harvest=True)
         else:
-            candidates = [m for m in self._candidate_macs() if self._resolve(m)]
+            candidates = [
+                m for m in self._candidate_macs(for_harvest=True) if self._resolve(m)
+            ]
         _LOGGER.debug(
             "%s: %d candidate node(s), %d proven; trying up to %d (%s)",
             self.mesh_name,
@@ -293,6 +331,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         # of time, and always lets the one it started finish.
         deadline = time.monotonic() + HARVEST_DEADLINE_SECONDS
         session = None
+        harvest_mac = None
         for mac in candidates[:MAX_CONNECT_ATTEMPTS]:
             if time.monotonic() > deadline:
                 _LOGGER.debug(
@@ -302,6 +341,7 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
                 break
             session = await self._connect_to(mac)
             if session is not None:
+                harvest_mac = mac
                 break
         if session is None:
             _LOGGER.debug("%s: no node reachable for a harvest", self.mesh_name)
@@ -318,10 +358,15 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         address = mac_to_address(session._mac)
         key = session._session_key
 
+        collected = 0
+
         def _on_notification(_sender: Any, data: bytearray) -> None:
+            nonlocal collected
             try:
                 clear = decrypt_packet(key, address, bytearray(data))
-                self._on_mesh_status(parse_status(bytes(clear)))
+                statuses = parse_status(bytes(clear))
+                collected += len(statuses or ())
+                self._on_mesh_status(statuses)
             except Exception:  # one undecodable packet must not end the sweep
                 _LOGGER.debug(
                     "%s: undecodable notification", self.mesh_name, exc_info=True
@@ -357,22 +402,69 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
             await self._async_close_link()
 
         self._last_harvest = time.monotonic()
+        if harvest_mac is not None:
+            self._record_sweep(harvest_mac, collected)
         _LOGGER.debug(
-            "%s: harvest collected %d device states (%d new)",
+            "%s: harvest via %s collected %d status record(s), %d device states "
+            "known (%d new)",
             self.mesh_name,
+            harvest_mac,
+            collected,
             len(self.device_states),
             len(self.device_states) - before,
         )
 
+    def _record_sweep(self, mac: str, collected: int) -> None:
+        """Learn whether this node can actually harvest, from what it just did.
+
+        The whole point of separating this from `_authenticate`: a node of the
+        refusing OUI family authenticates exactly like a working one and then
+        returns nothing, so only an attempted sweep distinguishes them. One
+        empty sweep is enough to demote - the behaviour is a property of the
+        firmware, not a transient, and it was unanimous within each family
+        across every node of a 46-node mesh.
+        """
+        if collected:
+            self._barren.pop(mac, None)
+            self._sweep_size[mac] = max(self._sweep_size.get(mac, 0), collected)
+            if mac not in self._known_good:
+                self._known_good.add(mac)
+                self._persist_known_good()
+            return
+
+        self._barren[mac] = time.monotonic()
+        if mac in self._known_good:
+            # Seeded from the old "authenticated" meaning, or a node that has
+            # stopped delivering. Either way it is not a harvest relay.
+            self._known_good.discard(mac)
+            self._sweep_size.pop(mac, None)
+            _LOGGER.debug(
+                "%s: %s authenticates but delivers no sweep, so it is no longer "
+                "preferred for harvests (it is still fine for commands)",
+                self.mesh_name,
+                mac,
+            )
+            self._persist_known_good()
+
     def _persist_known_good(self) -> None:
         """Write newly-proven nodes back to the config entry.
 
-        Only on a genuine addition, never on every connect - this rewrites
+        Only on a genuine change, never on every connect - this rewrites
         stored options, and doing that on a 120s cycle for no change would be
         pointless churn. Capped, because a mesh where everything answers does
         not need a list of everything.
+
+        Kept by **best sweep size**, not alphabetically. Sorting by mac was an
+        active bug rather than an arbitrary choice: `78:6D:EB` sorts before
+        `F4:BC:DA`, and those are precisely the two families that cannot and
+        can harvest, so the cap systematically evicted the working nodes and
+        kept the useless ones.
         """
-        keep = sorted(self._known_good)[:MAX_KNOWN_GOOD]
+        keep = sorted(
+            self._known_good,
+            key=lambda mac: (self._sweep_size.get(mac, 0), mac),
+            reverse=True,
+        )[:MAX_KNOWN_GOOD]
         try:
             self.hass.config_entries.async_update_entry(
                 self.entry,
@@ -498,9 +590,10 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         self._client = client
         self._last_used[mac] = time.monotonic()
         self._recent_failures.pop(mac, None)
-        if mac not in self._known_good:
-            self._known_good.add(mac)
-            self._persist_known_good()
+        # Authenticating proves the node can carry commands, and nothing more.
+        # Whether it can carry a harvest is decided by _record_sweep, after one
+        # has actually been attempted through it.
+        self._connectable.add(mac)
         return session
 
     async def _async_ensure_connected(self) -> BleMeshSession:

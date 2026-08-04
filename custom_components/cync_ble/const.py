@@ -24,15 +24,26 @@ CONF_DEVICES = "devices"
 # Assistant is itself using.
 CONF_DIRECT_ADAPTER = "direct_adapter"
 
-# Nodes that have completed a mesh handshake, remembered across restarts.
+# Nodes that have delivered a real status sweep, remembered across restarts.
 #
-# On this mesh most nodes never accept a connection at all, so knowing which
-# ones do is expensive to learn and worth keeping: a cycle that starts with a
-# proven node finishes in ~8s, one that has to rediscover takes 40-70s and
-# can fail outright. Learning it in memory alone was not enough - the count
-# was observed resetting to zero between cycles without the config entry
-# reloading, and the cause was never established, so this makes the knowledge
-# survive whatever does it.
+# Note the criterion: **delivered a sweep**, not "completed a handshake". That
+# used to be the meaning and it was the wrong one. Measured across all 46 nodes
+# of a real mesh, the firmware answers the subscribe two ways by OUI - the
+# F4:BC:DA / 30:C0:1B families leave the CCCD write hanging, which keeps the
+# callback registered long enough to catch 38 devices' worth of sweep, while
+# 78:6D:EB refuses it instantly and bleak discards the callback before anything
+# arrives. Both families authenticate identically, so a handshake says nothing
+# about whether a node can harvest, and preferring nodes on that basis put two
+# permanently barren relays at the head of the candidate list.
+#
+# Worth persisting either way: a cycle that starts with a proven node finishes
+# in ~8s, one that has to rediscover takes 40-70s and can fail outright.
+# Learning it in memory alone was not enough - the count was observed resetting
+# to zero between cycles without the config entry reloading, and the cause was
+# never established, so this makes the knowledge survive whatever does it.
+#
+# Entries written under the old meaning are migrated by attrition: the first
+# harvest through a barren node collects nothing and demotes it.
 CONF_KNOWN_GOOD = "known_good_nodes"
 
 # Each entry in CONF_DEVICES: {"id": int, "name": str, "type": int, "mac": str}.

@@ -136,6 +136,100 @@ async def test_signal_lookup_failure_does_not_break_ordering(hass):
     assert coordinator._candidate_macs()  # _signal hits a real, absent manager
 
 
+async def test_a_node_that_sweeps_becomes_proven(hass):
+    """Delivering status records is what earns a place at the head of the
+    list - the whole point of separating this from authentication."""
+    coordinator = _coordinator(hass)
+    coordinator._record_sweep(ANSWERS, collected=38)
+    assert ANSWERS in coordinator._known_good
+    assert coordinator._candidate_macs(for_harvest=True)[0] == ANSWERS
+
+
+async def test_a_node_that_authenticates_but_sweeps_nothing_is_not_proven(hass):
+    """The bug this fixes. `78:6D:EB` nodes authenticate exactly like working
+    ones and then refuse the subscribe outright, so a handshake must not be
+    enough to make one the preferred harvest relay."""
+    coordinator = _coordinator(hass)
+    coordinator._record_sweep(REFUSING[0], collected=0)
+    assert REFUSING[0] not in coordinator._known_good
+    order = coordinator._candidate_macs(for_harvest=True)
+    assert order[0] != REFUSING[0]
+
+
+async def test_a_barren_node_sinks_below_untried_ones_for_harvests(hass):
+    """A never-tried node might turn out to sweep; a barren one is known not
+    to. Spending a harvest attempt on the latter is a guaranteed waste."""
+    coordinator = _coordinator(hass)
+    coordinator._record_sweep(REFUSING[0], collected=0)
+    order = coordinator._candidate_macs(for_harvest=True)
+    assert order.index(REFUSING[0]) > order.index(REFUSING[1])
+
+
+async def test_a_barren_node_still_leads_for_commands(hass):
+    """Barren is a statement about harvesting only. The node connects and
+    authenticates fine, and any authenticated node reaches the whole mesh, so
+    for a command it beats one nothing is known about."""
+    coordinator = _coordinator(hass)
+    coordinator._record_sweep(REFUSING[2], collected=0)
+    order = coordinator._candidate_macs()
+    assert order[0] == REFUSING[2]
+
+
+async def test_a_seeded_node_is_demoted_once_it_harvests_nothing(hass):
+    """Entries persisted under the old "authenticated" meaning may name nodes
+    that can never sweep - two of the three on the development account did.
+    They must not stay at the head of the list forever."""
+    coordinator = _coordinator(hass)
+    coordinator._known_good.add(REFUSING[0])
+    assert coordinator._candidate_macs(for_harvest=True)[0] == REFUSING[0]
+
+    coordinator._record_sweep(REFUSING[0], collected=0)
+
+    assert REFUSING[0] not in coordinator._known_good
+    assert coordinator._candidate_macs(for_harvest=True)[0] != REFUSING[0]
+
+
+async def test_authenticating_alone_does_not_make_a_node_proven(hass):
+    """Guards the exact line the bug lived on. `_authenticate` used to promote
+    into `_known_good`, which is how two nodes that can never sweep came to
+    lead the candidate list on the development account."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    coordinator = _coordinator(hass)
+    session = MagicMock()
+    session.authenticate = AsyncMock(return_value=True)
+
+    with patch(
+        "custom_components.cync_ble.coordinator.BleMeshSession",
+        return_value=session,
+    ):
+        result = await coordinator._authenticate(MagicMock(), ANSWERS, ANSWERS)
+
+    assert result is session, "authentication itself must still succeed"
+    assert ANSWERS in coordinator._connectable, "and must record connectability"
+    assert ANSWERS not in coordinator._known_good, (
+        "but must NOT mark the node as a proven harvest relay"
+    )
+
+
+async def test_the_persisted_cap_keeps_the_best_sweepers(hass):
+    """Sorting by mac was an active bug, not an arbitrary tiebreak: 786DEB
+    sorts before F4BCDA, and those are exactly the families that cannot and
+    can harvest, so the cap evicted the working nodes."""
+    from custom_components.cync_ble.const import CONF_KNOWN_GOOD, MAX_KNOWN_GOOD
+
+    macs = [f"78:6D:EB:00:00:{i:02X}" for i in range(MAX_KNOWN_GOOD)]
+    best = "F4:BC:DA:00:00:99"
+    coordinator = _coordinator(hass, [*macs, best])
+    for mac in macs:
+        coordinator._record_sweep(mac, collected=1)
+    coordinator._record_sweep(best, collected=38)
+
+    kept = coordinator.entry.options[CONF_KNOWN_GOOD]
+    assert len(kept) == MAX_KNOWN_GOOD
+    assert best in kept, "the node with the largest sweep must survive the cap"
+
+
 async def test_proven_nodes_survive_a_new_coordinator(hass):
     """Proven nodes are seeded from the config entry, not just learned.
 
