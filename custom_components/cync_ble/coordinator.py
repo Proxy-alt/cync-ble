@@ -289,6 +289,15 @@ class CyncBleCoordinator(DataUpdateCoordinator[dict[int, DeviceStatus]]):
         """
         try:
             for status in statuses:
+                # An offline device still reports the last level the mesh knew,
+                # which is real information but not a fresh reading - so it
+                # fills a gap rather than overwriting something we already
+                # have. getattr because the field is newer than the version
+                # floor in the manifest; older releases only ever produced
+                # readings that were online by construction.
+                if not getattr(status, "online", True):
+                    self.device_states.setdefault(status.device_id, status)
+                    continue
                 self.device_states[status.device_id] = status
         except Exception:  # a bad packet must not end the sweep
             _LOGGER.debug("%s: bad status record", self.mesh_name, exc_info=True)

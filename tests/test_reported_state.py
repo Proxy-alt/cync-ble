@@ -206,3 +206,30 @@ async def test_a_missing_bumble_backend_degrades_instead_of_bricking(hass):
         assert await coordinator._connect_to("F4BCDA32A971") is None
 
     assert coordinator.direct_mode is False, "direct mode must switch itself off"
+
+
+async def test_an_offline_reading_fills_a_gap_but_never_overwrites(hass):
+    """A device the mesh cannot reach still reports the last level it knew.
+
+    That is worth having when nothing else is known, and worth ignoring when
+    something fresher is - the alternative is a device that was switched on an
+    hour ago overwriting a reading taken seconds ago.
+    """
+    coordinator = _coordinator(hass)
+
+    offline = DeviceStatus(
+        device_id=TARGET, brightness=100, is_rgb=False, online=False
+    )
+    coordinator._on_mesh_status([offline])
+    assert coordinator.device_states[TARGET].brightness == 100, (
+        "with nothing known, an offline reading is better than none"
+    )
+
+    fresh = DeviceStatus(device_id=TARGET, brightness=25, is_rgb=False, online=True)
+    coordinator._on_mesh_status([fresh])
+    assert coordinator.device_states[TARGET].brightness == 25
+
+    coordinator._on_mesh_status([offline])
+    assert coordinator.device_states[TARGET].brightness == 25, (
+        "a stale offline reading must not displace a fresh one"
+    )
