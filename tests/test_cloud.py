@@ -314,3 +314,74 @@ async def test_login_response_missing_fields_is_a_cloud_error():
     cloud = CyncCloud(session)
     with pytest.raises(CyncCloudError):
         await cloud.login("someone@example.com", "pw", 123456)
+
+
+# ---------------------------------------------------------------------------
+# Credentials the Cync cloud will actually accept
+# ---------------------------------------------------------------------------
+
+
+async def _login_body(password: str, otp_code):
+    """Run login() against a stubbed transport and return the JSON it sent."""
+    from unittest.mock import AsyncMock
+
+    cloud = CyncCloud(session=None)  # type: ignore[arg-type]
+    sent: dict = {}
+
+    async def _json(method, url, **kwargs):
+        sent.update(kwargs.get("json") or {})
+        return {"access_token": "t", "user_id": 1}
+
+    cloud._json = AsyncMock(side_effect=_json)
+    await cloud.login("user@example.com", password, otp_code)
+    return sent
+
+
+async def test_a_password_longer_than_sixteen_is_truncated():
+    """Cync's signup form caps passwords at 16, so a longer one only ever had
+    its first 16 characters stored. Sending the whole thing compares against
+    something the server never saved and returns 400 with
+    `{"msg": "password error", "code": 4001007}` - which reads as a wrong
+    password, not as a bug in us."""
+    sent = await _login_body("correct horse battery staple", "123456")
+    assert sent["password"] == "correct horse ba"
+    assert len(sent["password"]) == CyncCloud.PASSWORD_MAX_LENGTH
+
+
+async def test_a_shorter_password_is_untouched():
+    sent = await _login_body("hunter2", "123456")
+    assert sent["password"] == "hunter2"
+
+
+async def test_an_otp_keeps_its_leading_zero():
+    """int("012345") is 12345 - six digits become five, the cloud rejects it,
+    and retyping the same correct code fails identically every time."""
+    sent = await _login_body("hunter2", "012345")
+    assert sent["two_factor"] == "012345"
+
+
+async def test_an_all_zero_otp_is_sent_as_six_digits():
+    sent = await _login_body("hunter2", "000000")
+    assert sent["two_factor"] == "000000"
+
+
+async def test_a_password_is_truncated_but_never_trimmed():
+    """A space is a legal password character. Truncating to 16 must not
+    quietly become stripping - an account whose stored password really does
+    end in a space is indistinguishable from a stray keystroke, and only one
+    of those two guesses can be right."""
+    padded = "hunter2" + " " * 9  # exactly 16, the last nine of them spaces
+    assert len(padded) == CyncCloud.PASSWORD_MAX_LENGTH
+    sent = await _login_body(padded, "123456")
+    assert sent["password"] == padded
+
+    internal = "my pass word is"  # 15, spaces in the middle
+    sent = await _login_body(internal, "123456")
+    assert sent["password"] == internal
+
+
+async def test_seventeen_characters_loses_only_the_seventeenth():
+    """The case that started this: "MyPasswordIsCool " is 16 real characters
+    plus a space, so the space is what goes."""
+    sent = await _login_body("MyPasswordIsCool ", "123456")
+    assert sent["password"] == "MyPasswordIsCool"

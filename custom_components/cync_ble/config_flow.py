@@ -119,9 +119,13 @@ class CyncBleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             assert self._cloud is not None
             assert self._username is not None
             assert self._password is not None
-            try:
-                code = int(user_input["otp_code"])
-            except ValueError:
+            # Kept as the string the user typed. This used to be
+            # `int(user_input["otp_code"])`, which silently drops a leading
+            # zero, so about one code in ten was sent five digits long and
+            # rejected - and retyping the same correct code failed the same
+            # way, with nothing to suggest why.
+            code = user_input["otp_code"].strip()
+            if not code.isdigit():
                 errors["base"] = "invalid_otp"
             else:
                 try:

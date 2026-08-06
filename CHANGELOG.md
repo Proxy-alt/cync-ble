@@ -7,6 +7,33 @@ library's own version scheme, which this integration depends on to do the
 actual protocol work, and of the
 [`cync-lan`](https://github.com/Proxy-alt/cync-lan) integration's.
 
+### 0.2.3
+
+**Setup was impossible for two kinds of account.** Both bugs were in the login
+exchange, and both are the same ones @baudneo reported against `cync-lan`
+([cync-lan-lib#1](https://github.com/Proxy-alt/cync-lan-lib/pull/1)) - this
+integration has its own cloud client, so fixing them there did nothing here.
+
+- **A password longer than 16 characters.** Cync's signup form caps them at 16,
+  so a longer one only ever had its first 16 stored. Sending the whole thing
+  compares against something the server never saved and returns
+  `{"msg": "password error", "code": 4001007}` - which reads as a wrong
+  password, so the natural response is to retype it and fail again.
+- **A one-time code starting with `0`.** The flow cast it with `int()`, and
+  `int("012345")` is `12345`. Six digits became five, the cloud rejected them,
+  and retyping the same correct code failed identically. Roughly one code in
+  ten starts with a zero.
+
+The password is **truncated, never trimmed**. A space is a legal password
+character, and an account whose stored password really ends in one cannot be
+told apart from a stray keystroke - so nothing changes except the length.
+Pinned by a test, because "clean up the input" is the obvious-looking change
+that would break it.
+
+The 16-character limit here is a login-compatibility shim rather than
+validation. If registration is ever added, the limit belongs at the input
+field, where the user can still see what they typed.
+
 ### 0.2.2
 
 **`max_attempts=1` never bounded the failure it was added for.**

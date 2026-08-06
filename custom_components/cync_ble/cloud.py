@@ -101,16 +101,41 @@ class CyncCloud:
             json={"corp_id": CORP_ID, "email": email, "local_lang": "en-us"},
         )
 
-    async def login(self, email: str, password: str, otp_code: int) -> None:
-        """Exchange the emailed code for an access token."""
+    # The Cync signup form caps passwords at 16 characters, so an account
+    # created with a longer one only ever had the first 16 stored. Sending
+    # the whole thing compares against something the server never saved and
+    # comes back 400 `{"error": {"msg": "password error", "code": 4001007}}` -
+    # a credential mismatch, not a malformed request, which is why it reads
+    # as a wrong password rather than a bug in us.
+    #
+    # Truncate only. Never strip: a space is a legal password character, and
+    # `"MyPasswordIsCool "` is a real thing a user can have. Trimming it
+    # would break an account whose stored password genuinely ends in one,
+    # and there is no way to tell that case from an accidental keystroke -
+    # so the safe move is to change nothing except the length.
+    #
+    # This is a login-compatibility shim, not validation. If registration is
+    # ever added here, the limit belongs at the input: reject or warn while
+    # the user can still see the field, rather than silently signing them up
+    # with a password that is not the one they typed.
+    PASSWORD_MAX_LENGTH = 16
+
+    async def login(self, email: str, password: str, otp_code: str) -> None:
+        """Exchange the emailed code for an access token.
+
+        `otp_code` is a **string** on purpose. Casting it to int destroys a
+        leading zero - `int("012345")` is `12345` - so roughly one code in ten
+        would arrive five digits long, be rejected as invalid, and fail
+        identically every time the user retyped the correct code.
+        """
         body = await self._json(
             "POST",
             f"{API_BASE}user_auth/two_factor",
             json={
                 "corp_id": CORP_ID,
                 "email": email,
-                "password": password,
-                "two_factor": otp_code,
+                "password": password[: self.PASSWORD_MAX_LENGTH],
+                "two_factor": str(otp_code),
                 "resource": "".join(random.choices(string.ascii_lowercase, k=16)),
             },
         )

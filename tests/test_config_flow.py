@@ -72,7 +72,33 @@ async def test_credentials_the_user_typed_are_the_ones_used(hass, mock_cloud):
     await _otp(hass, result["flow_id"])
 
     mock_cloud.request_otp.assert_awaited_once_with("user@example.com")
-    mock_cloud.login.assert_awaited_once_with("user@example.com", "hunter2", 123456)
+    # "123456" and not 123456: the flow used to cast the code with int(),
+    # which cannot represent a leading zero at all. See the test below.
+    mock_cloud.login.assert_awaited_once_with("user@example.com", "hunter2", "123456")
+
+
+async def test_an_otp_with_a_leading_zero_is_not_mangled(hass, mock_cloud):
+    """int("012345") is 12345, so about one code in ten arrived five digits
+    long, was rejected, and failed identically every time the user retyped
+    the correct code. Setup was simply impossible for those accounts."""
+    result = await _start(hass)
+    result = await _credentials(hass, result["flow_id"])
+    await _otp(hass, result["flow_id"], code="012345")
+
+    assert mock_cloud.login.await_args.args[2] == "012345"
+
+
+async def test_a_non_numeric_otp_is_rejected_without_calling_the_cloud(
+    hass, mock_cloud
+):
+    """The int() cast used to provide this check as a side effect of raising
+    ValueError. Removing it means saying so explicitly."""
+    result = await _start(hass)
+    result = await _credentials(hass, result["flow_id"])
+    result = await _otp(hass, result["flow_id"], code="not-a-code")
+
+    assert result["errors"] == {"base": "invalid_otp"}
+    mock_cloud.login.assert_not_awaited()
 
 
 async def test_multiple_homes_shows_picker(hass, mock_cloud, multiple_homes):
